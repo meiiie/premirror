@@ -250,7 +250,7 @@ html, body {
 
 .premirror-image-block.is-live-dragging {
   z-index: 2;
-  opacity: 0.08;
+  opacity: 0;
   box-shadow: none;
   transform: none;
   outline-color: transparent;
@@ -262,10 +262,11 @@ html, body {
   display: block;
   object-fit: contain;
   pointer-events: none;
+  opacity: 0.76;
   border-radius: 10px;
   border: 1px solid #93c5fd;
-  background: #fff;
-  box-shadow: 0 22px 48px rgba(15, 23, 42, 0.24);
+  background: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.2);
   transform: rotate(-1deg) scale(1.01);
   transform-origin: center center;
 }
