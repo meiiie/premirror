@@ -6,6 +6,7 @@ import type {
   BreakReason,
   ComposeMetrics,
   FrameLayout,
+  ImageAlignment,
   Interval,
   LayoutInput,
   LayoutOutput,
@@ -68,6 +69,41 @@ function resolvePolicies(input: LayoutInput): ResolvedPolicies {
     minSlotWidthPx: p.minSlotWidthPx ?? DEFAULT_LAYOUT_POLICIES.minSlotWidthPx ?? 48,
     slotSelectionPolicy: p.slotSelectionPolicy ?? "single_slot_flow",
   };
+}
+
+function readPositiveNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return fallback;
+}
+
+function readImageAlignment(value: unknown): ImageAlignment {
+  return value === "left" || value === "right" ? value : "center";
+}
+
+function fittedImageBlockSize(
+  block: BlockSnapshot,
+  frameWidth: number,
+  frameHeight: number,
+): { width: number; height: number; align: ImageAlignment } {
+  const widthPx = readPositiveNumber(block.attrs["widthPx"], frameWidth);
+  const heightPx = readPositiveNumber(block.attrs["heightPx"], frameHeight);
+  const align = readImageAlignment(block.attrs["align"]);
+  const scale = Math.min(1, frameWidth / widthPx, frameHeight / heightPx);
+  return {
+    width: Math.max(1, widthPx * scale),
+    height: Math.max(1, heightPx * scale),
+    align,
+  };
+}
+
+function imageXOffset(align: ImageAlignment, frameWidth: number, imageWidth: number): number {
+  if (align === "left") return 0;
+  if (align === "right") return Math.max(0, frameWidth - imageWidth);
+  return Math.max(0, (frameWidth - imageWidth) / 2);
 }
 
 // -----------------------------------------------------------------------------
@@ -351,6 +387,7 @@ function breakBlockIntoLineDrafts(
   snapshot: MeasuredDocumentSnapshot,
   contentWidth: number,
 ): LineDraft[] {
+  if (block.type === "image") return [];
   const lines: LineDraft[] = [];
   const measuredRuns = snapshot.measuredRuns;
 
@@ -658,6 +695,9 @@ export function composeLayout(
   };
 
   const estimateBlockHeight = (b: BlockSnapshot, yInFrame: number): number => {
+    if (b.type === "image") {
+      return fittedImageBlockSize(b, frame.width, frame.height).height;
+    }
     const w = contentWidthForBlockStart(yInFrame);
     const d = breakBlockIntoLineDrafts(b, snapshot, w);
     return d.length * lineHeight;
@@ -668,6 +708,44 @@ export function composeLayout(
     const manualBreak = block.attrs["manualPageBreakBefore"] === true;
     if (manualBreak && (currentFragments.length > 0 || currentY > 0)) {
       flushPage("manual_page_break");
+    }
+
+    if (block.type === "image") {
+      const image = fittedImageBlockSize(block, frame.width, frame.height);
+      if (currentY > 0 && currentY + image.height > frame.height) {
+        flushPage("frame_overflow");
+      }
+
+      const imageLine: LineBox = {
+        y: currentY,
+        height: image.height,
+        runs: [],
+        pmRange: { from: block.pmRange.from, to: block.pmRange.to },
+      };
+      const fragIdx = currentFragments.length;
+      currentFragments.push({
+        blockId: block.id,
+        fragmentIndex: 0,
+        kind: "image",
+        pmRange: { from: block.pmRange.from, to: block.pmRange.to },
+        lines: [imageLine],
+        bounds: {
+          x: imageXOffset(image.align, frame.width, image.width),
+          y: currentY,
+          width: image.width,
+          height: image.height,
+        },
+      });
+      lineRefs.push({
+        pageIndex,
+        frameIndex: 0,
+        fragmentIndex: fragIdx,
+        lineIndex: 0,
+        pmFrom: block.pmRange.from,
+        pmTo: block.pmRange.to,
+      });
+      currentY += image.height;
+      continue;
     }
 
     const nextBlock = blocks[bi + 1];
@@ -740,6 +818,7 @@ export function composeLayout(
       const frag: BlockFragment = {
         blockId: block.id,
         fragmentIndex,
+        kind: "text",
         pmRange: { from: pmMin, to: pmMax },
         lines: assigned,
         ...(willContinue ? { breakReason: breakReasonForSplit ?? "frame_overflow" } : {}),

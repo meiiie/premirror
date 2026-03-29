@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" fill="none">
+  <rect width="960" height="540" rx="28" fill="#F8FAFC"/>
+  <rect x="36" y="36" width="888" height="468" rx="24" fill="url(#panel)"/>
+  <rect x="72" y="72" width="300" height="172" rx="18" fill="#DBEAFE"/>
+  <rect x="408" y="88" width="476" height="24" rx="12" fill="#E2E8F0"/>
+  <rect x="408" y="132" width="438" height="18" rx="9" fill="#CBD5E1"/>
+  <rect x="408" y="168" width="362" height="18" rx="9" fill="#CBD5E1"/>
+  <rect x="408" y="204" width="290" height="18" rx="9" fill="#CBD5E1"/>
+  <rect x="72" y="286" width="812" height="22" rx="11" fill="#E2E8F0"/>
+  <rect x="72" y="326" width="760" height="18" rx="9" fill="#CBD5E1"/>
+  <rect x="72" y="362" width="790" height="18" rx="9" fill="#CBD5E1"/>
+  <rect x="72" y="398" width="704" height="18" rx="9" fill="#CBD5E1"/>
+  <rect x="72" y="434" width="260" height="18" rx="9" fill="#CBD5E1"/>
+  <circle cx="160" cy="158" r="42" fill="#2563EB"/>
+  <path d="M160 128L183 168H137L160 128Z" fill="#BFDBFE"/>
+  <path d="M160 188C179.882 188 196 171.882 196 152C196 132.118 179.882 116 160 116C140.118 116 124 132.118 124 152C124 171.882 140.118 188 160 188Z" stroke="#1D4ED8" stroke-width="8"/>
+  <defs>
+    <linearGradient id="panel" x1="36" y1="36" x2="924" y2="504" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#EFF6FF"/>
+    </linearGradient>
+  </defs>
+</svg>

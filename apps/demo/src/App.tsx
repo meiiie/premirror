@@ -26,8 +26,9 @@ import { history, redo, undo } from "prosemirror-history";
 import { Decoration, DecorationSet } from "prosemirror-view";
 import { useCallback, useMemo, useState } from "react";
 
-import { LuBold, LuItalic, LuCode, LuSeparatorHorizontal, LuGithub } from "react-icons/lu";
+import { LuBold, LuItalic, LuCode, LuSeparatorHorizontal, LuGithub, LuImage } from "react-icons/lu";
 
+import lessonImageUrl from "./assets/lesson-image.svg";
 import { demoSchema } from "./schema";
 
 function buildInitialState(
@@ -53,10 +54,22 @@ function buildInitialState(
   ).flat();
   const docNodes = repeated.flatMap((text, i) => {
     const paragraph = demoSchema.node("paragraph", null, [demoSchema.text(text)]);
-    if ((i + 1) % 3 === 0) {
-      return [paragraph, demoSchema.node("paragraph")];
+    const blocks: ProseMirrorNode[] = [paragraph];
+    if ((i + 1) % 8 === 0) {
+      blocks.push(
+        demoSchema.node("image", {
+          src: lessonImageUrl,
+          alt: `Lesson illustration ${i + 1}`,
+          widthPx: 480,
+          heightPx: 270,
+          align: "center",
+        }),
+      );
     }
-    return [paragraph];
+    if ((i + 1) % 3 === 0) {
+      blocks.push(demoSchema.node("paragraph"));
+    }
+    return blocks;
   });
   const doc = demoSchema.node(
     "doc",
@@ -140,6 +153,15 @@ type ParagraphBox = {
   bottom: number;
 };
 
+type ImageBox = {
+  from: number;
+  to: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
 function clampPos(doc: ProseMirrorNode, pos: number): number {
   const max = Math.max(1, doc.content.size);
   return Math.max(1, Math.min(pos, max));
@@ -180,6 +202,7 @@ function buildFragmentDecorations(
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const paragraphBoxes = new Map<string, ParagraphBox>();
+  const imageBoxes: ImageBox[] = [];
   const runPlacements: Array<{
     runFrom: number;
     runTo: number;
@@ -221,6 +244,19 @@ function buildFragmentDecorations(
     const pagePlacement = geometry.pagePlacements[pageIdx] ?? { left: 0, top: 0 };
     for (const frame of page.frames) {
       for (const fragment of frame.fragments) {
+        if (fragment.kind === "image") {
+          const bounds = fragment.bounds;
+          if (!bounds) continue;
+          imageBoxes.push({
+            from: fragment.pmRange.from,
+            to: fragment.pmRange.to,
+            left: pagePlacement.left + frame.bounds.x + bounds.x,
+            top: pagePlacement.top + frame.bounds.y + bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+          });
+          continue;
+        }
         const fragmentParagraph = paragraphRangeFromBlockId(doc, fragment.blockId);
         for (const line of fragment.lines) {
           const lineTop = pagePlacement.top + frame.bounds.y + line.y;
@@ -280,6 +316,22 @@ function buildFragmentDecorations(
           `height:${Math.max(1, box.bottom - box.top)}px`,
           "margin:0",
           "overflow:visible",
+        ].join(";"),
+      }),
+    );
+  }
+
+  for (const image of imageBoxes) {
+    decorations.push(
+      Decoration.node(image.from, image.to, {
+        class: "premirror-image-block",
+        style: [
+          "position:absolute",
+          `left:${image.left}px`,
+          `top:${image.top}px`,
+          `width:${Math.max(1, image.width)}px`,
+          `height:${Math.max(1, image.height)}px`,
+          "margin:0",
         ].join(";"),
       }),
     );
@@ -371,6 +423,26 @@ export function App() {
     run((s, d) => toggleMark(codeMark)(s, d));
   }, [run, codeMark]);
 
+  const insertImage = useCallback(() => {
+    run((state, dispatchTransaction) => {
+      const image = state.schema.nodes.image;
+      if (!image) return false;
+      const { $from } = state.selection;
+      const insertPos = $from.depth > 0 ? $from.after(1) : state.selection.to;
+      const node = image.create({
+        src: lessonImageUrl,
+        alt: "Lesson illustration",
+        widthPx: 480,
+        heightPx: 270,
+        align: "center",
+      });
+      if (dispatchTransaction) {
+        dispatchTransaction(state.tr.insert(insertPos, node).scrollIntoView());
+      }
+      return true;
+    });
+  }, [run]);
+
   const pageBreak = useCallback(() => {
     run((s, d) => runtime.commands.insertPageBreak(s, d));
   }, [run, runtime.commands]);
@@ -387,6 +459,9 @@ export function App() {
           </Toolbar.Button>
           <Toolbar.Button className="word-toolbar-icon-btn" type="button" onClick={toggleCode} aria-label="Code">
             <LuCode />
+          </Toolbar.Button>
+          <Toolbar.Button className="word-toolbar-icon-btn" type="button" onClick={insertImage} aria-label="Insert image">
+            <LuImage />
           </Toolbar.Button>
           <Toolbar.Separator className="word-toolbar-sep" />
           <Toolbar.Button className="word-toolbar-icon-btn" type="button" onClick={pageBreak} aria-label="Page break">

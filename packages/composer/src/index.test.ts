@@ -112,4 +112,32 @@ describe("@premirror/composer", () => {
     const back = out.mapping.layoutToPmPos(point);
     expect(back).toBe(2);
   });
+
+  it("places fixed-size image blocks as image fragments", () => {
+    const snapshot: MeasuredDocumentSnapshot = {
+      blocks: [
+        {
+          id: "img-1",
+          type: "image",
+          attrs: {
+            src: "https://example.com/lesson.svg",
+            alt: "Lesson image",
+            widthPx: 320,
+            heightPx: 180,
+            align: "center",
+          },
+          pmRange: { from: 1, to: 2 },
+          runs: [],
+        },
+      ],
+      measuredRuns: {},
+    };
+
+    const out = composeLayout(snapshot, null, makeInput());
+    const fragment = out.pages[0]?.frames[0]?.fragments[0];
+    expect(fragment).toBeDefined();
+    expect(fragment?.kind).toBe("image");
+    expect(fragment?.bounds?.width).toBeGreaterThan(0);
+    expect(fragment?.bounds?.height).toBeGreaterThan(0);
+  });
 });

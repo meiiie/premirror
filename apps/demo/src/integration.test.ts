@@ -21,6 +21,13 @@ describe("demo integration", () => {
         demoSchema.node("paragraph", null, [
           demoSchema.text("Hello world from integration test."),
         ]),
+        demoSchema.node("image", {
+          src: "https://example.com/lesson.svg",
+          alt: "Lesson image",
+          widthPx: 420,
+          heightPx: 240,
+          align: "center",
+        }),
       ]),
       plugins: runtime.plugins,
     });
@@ -35,5 +42,6 @@ describe("demo integration", () => {
 
     expect(layout.pages.length).toBeGreaterThan(0);
     expect(layout.metrics.blocks).toBeGreaterThan(0);
+    expect(layout.pages[0]?.frames[0]?.fragments.some((fragment) => fragment.kind === "image")).toBe(true);
   });
 });

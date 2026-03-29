@@ -54,6 +54,16 @@ export type ResolvedMarkSet = {
   linkHref?: string;
 };
 
+export type ImageAlignment = "left" | "center" | "right";
+
+export type ImageBlockAttrs = {
+  src: string;
+  alt?: string;
+  widthPx: number;
+  heightPx: number;
+  align?: ImageAlignment;
+};
+
 export type StyledRun = {
   id: string;
   text: string;
@@ -65,7 +75,7 @@ export type StyledRun = {
 
 export type BlockSnapshot = {
   id: string;
-  type: "paragraph" | "heading" | "blockquote";
+  type: "paragraph" | "heading" | "blockquote" | "image";
   attrs: Record<string, unknown>;
   runs: StyledRun[];
   pmRange: { from: number; to: number };
@@ -114,8 +124,10 @@ export type LineBox = {
 export type BlockFragment = {
   blockId: string;
   fragmentIndex: number;
+  kind: "text" | "image";
   pmRange: { from: number; to: number };
   lines: LineBox[];
+  bounds?: Rect;
   breakReason?: BreakReason;
 };
 

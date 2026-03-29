@@ -5,6 +5,7 @@
 import { layoutNextLine, prepareWithSegments } from "@chenglou/pretext";
 import type {
   BlockSnapshot,
+  ImageAlignment,
   MeasuredDocumentSnapshot,
   MeasuredRun,
   PremirrorOptions,
@@ -135,11 +136,27 @@ function marksEqual(a: ResolvedMarkSet, b: ResolvedMarkSet): boolean {
 
 // --- Snapshot extraction ------------------------------------------------------
 
+const DEFAULT_IMAGE_WIDTH_PX = 480;
+const DEFAULT_IMAGE_HEIGHT_PX = 270;
+
 type ListContext = {
   depth: number;
   ordered: boolean;
   inBlockquote?: boolean;
 };
+
+function readPositiveNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return fallback;
+}
+
+function readImageAlignment(value: unknown): ImageAlignment {
+  return value === "left" || value === "right" ? value : "center";
+}
 
 function collectRunsForBlock(
   block: PMNode,
@@ -237,6 +254,30 @@ function pushParagraphLike(
   });
 }
 
+function pushImageBlock(
+  blocks: BlockSnapshot[],
+  node: PMNode,
+  pos: number,
+  extraAttrs: Record<string, unknown>,
+): void {
+  const id = `block-${pos}`;
+  const widthPx = readPositiveNumber(node.attrs.widthPx, DEFAULT_IMAGE_WIDTH_PX);
+  const heightPx = readPositiveNumber(node.attrs.heightPx, DEFAULT_IMAGE_HEIGHT_PX);
+  const align = readImageAlignment(node.attrs.align);
+  blocks.push({
+    id,
+    type: "image",
+    attrs: attrsForBlock(node, {
+      widthPx,
+      heightPx,
+      align,
+      ...extraAttrs,
+    }),
+    runs: [],
+    pmRange: { from: pos, to: pos + node.nodeSize },
+  });
+}
+
 function walkListItem(
   item: PMNode,
   pos: number,
@@ -254,6 +295,12 @@ function walkListItem(
       });
     } else if (child.type.name === "heading") {
       pushParagraphLike(blocks, child, childPos, "heading", typography, {
+        listItem: true,
+        listDepth: ctx.depth,
+        orderedList: ctx.ordered,
+      });
+    } else if (child.type.name === "image") {
+      pushImageBlock(blocks, child, childPos, {
         listItem: true,
         listDepth: ctx.depth,
         orderedList: ctx.ordered,
@@ -305,6 +352,11 @@ function walkBlockquote(
       pushParagraphLike(blocks, child, childPos, "heading", typography, {
         inBlockquote: true,
       });
+    } else if (child.type.name === "image") {
+      pushImageBlock(blocks, child, childPos, {
+        inBlockquote: true,
+        ...(extra.listFlattened === true ? { listFlattened: true } : {}),
+      });
     } else if (child.type.name === "blockquote") {
       walkBlockquote(child, childPos, blocks, typography, {});
     } else if (child.type.name === "bullet_list" || child.type.name === "ordered_list") {
@@ -327,6 +379,8 @@ function walkTopLevel(
     pushParagraphLike(blocks, node, pos, "paragraph", typography, {});
   } else if (node.type.name === "heading") {
     pushParagraphLike(blocks, node, pos, "heading", typography, {});
+  } else if (node.type.name === "image") {
+    pushImageBlock(blocks, node, pos, {});
   } else if (node.type.name === "blockquote") {
     walkBlockquote(node, pos, blocks, typography, {});
   } else if (node.type.name === "bullet_list" || node.type.name === "ordered_list") {

@@ -9,20 +9,49 @@ import { addListNodes } from "prosemirror-schema-list";
 import { createPremirror, premirrorInvalidationKey } from "./index";
 
 const paragraphSpec = basicSchema.spec.nodes.get("paragraph");
+const imageSpec = basicSchema.spec.nodes.get("image");
 
-if (!paragraphSpec) {
-  throw new Error("Missing paragraph spec");
+if (!paragraphSpec || !imageSpec) {
+  throw new Error("Missing base schema specs");
 }
 
 const schema = new Schema({
   nodes: addListNodes(
-    basicSchema.spec.nodes.update("paragraph", {
-      ...paragraphSpec,
-      attrs: {
-        ...paragraphSpec.attrs,
-        manualPageBreakBefore: { default: false },
-      },
-    }),
+    basicSchema.spec.nodes
+      .update("paragraph", {
+        ...paragraphSpec,
+        attrs: {
+          ...paragraphSpec.attrs,
+          manualPageBreakBefore: { default: false },
+        },
+      })
+      .update("image", {
+        ...imageSpec,
+        inline: false,
+        group: "block",
+        atom: true,
+        draggable: true,
+        attrs: {
+          src: { default: "" },
+          alt: { default: "" },
+          widthPx: { default: 480 },
+          heightPx: { default: 270 },
+          align: { default: "center" },
+        },
+        parseDOM: [],
+        toDOM(node) {
+          return [
+            "img",
+            {
+              src: node.attrs.src,
+              alt: node.attrs.alt,
+              width: node.attrs.widthPx,
+              height: node.attrs.heightPx,
+              "data-premirror-image-block": "true",
+            },
+          ];
+        },
+      }),
     "paragraph block*",
     "block",
   ),
@@ -63,6 +92,30 @@ describe("@premirror/prosemirror-adapter", () => {
     const firstKey = Object.keys(measured.measuredRuns)[0];
     expect(firstKey).toBeDefined();
     expect(measured.measuredRuns[firstKey!]?.widthPx).toBeGreaterThanOrEqual(0);
+  });
+
+  it("extracts image blocks with explicit dimensions", () => {
+    const runtime = createPremirror(defaultPremirrorOptions());
+    const state = EditorState.create({
+      schema,
+      doc: schema.node("doc", null, [
+        schema.node("image", {
+          src: "https://example.com/lesson.svg",
+          alt: "Lesson image",
+          widthPx: 420,
+          heightPx: 240,
+          align: "center",
+        }),
+      ]),
+      plugins: runtime.plugins,
+    });
+
+    const snapshot = runtime.toSnapshot(state);
+    expect(snapshot.blocks.length).toBe(1);
+    expect(snapshot.blocks[0]?.type).toBe("image");
+    expect(snapshot.blocks[0]?.attrs.widthPx).toBe(420);
+    expect(snapshot.blocks[0]?.attrs.heightPx).toBe(240);
+    expect(snapshot.blocks[0]?.runs).toEqual([]);
   });
 
   it("insertPageBreak command dispatches a transaction", () => {

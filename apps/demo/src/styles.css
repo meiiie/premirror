@@ -229,6 +229,21 @@ html, body {
   overflow: hidden;
 }
 
+.premirror-image-block {
+  position: absolute;
+  display: block;
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.premirror-image-block.ProseMirror-selectednode {
+  outline: 2px solid rgba(37, 99, 235, 0.65);
+  outline-offset: 2px;
+}
+
 .premirror-fragment-run {
   position: absolute;
   display: inline-block;

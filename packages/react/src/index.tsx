@@ -275,6 +275,21 @@ function collectRectsForPmRange(
     const pagePlacement = geometry.pagePlacements[pageIdx] ?? { left: 0, top: 0 };
     for (const frame of page.frames) {
       for (const frag of frame.fragments) {
+        if (frag.kind === "image" && frag.bounds) {
+          if (from !== to) {
+            const lo = Math.max(from, frag.pmRange.from);
+            const hi = Math.min(to, frag.pmRange.to);
+            if (lo < hi) {
+              rects.push({
+                x: pagePlacement.left + frame.bounds.x + frag.bounds.x,
+                y: pagePlacement.top + frame.bounds.y + frag.bounds.y,
+                width: frag.bounds.width,
+                height: frag.bounds.height,
+              });
+            }
+          }
+          continue;
+        }
         for (const line of frag.lines) {
           const lineFrom = line.pmRange.from;
           const lineTo = line.pmRange.to;
