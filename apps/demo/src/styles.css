@@ -249,7 +249,22 @@ html, body {
 }
 
 .premirror-image-block.is-live-dragging {
-  z-index: 24;
+  z-index: 2;
+  opacity: 0.08;
+  box-shadow: none;
+  transform: none;
+  outline-color: transparent;
+}
+
+.image-live-preview {
+  position: absolute;
+  z-index: 25;
+  display: block;
+  object-fit: contain;
+  pointer-events: none;
+  border-radius: 10px;
+  border: 1px solid #93c5fd;
+  background: #fff;
   box-shadow: 0 22px 48px rgba(15, 23, 42, 0.24);
   transform: rotate(-1deg) scale(1.01);
   transform-origin: center center;
@@ -265,7 +280,7 @@ html, body {
 }
 
 .image-drag-surface.is-dragging {
-  z-index: 24;
+  z-index: 26;
   cursor: grabbing;
 }
 

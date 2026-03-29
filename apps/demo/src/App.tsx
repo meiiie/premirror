@@ -881,6 +881,8 @@ export function App() {
   const insertFileInputRef = useRef<HTMLInputElement | null>(null);
   const moveSessionRef = useRef<MoveSession | null>(null);
   const viewportWrapRef = useRef<HTMLDivElement | null>(null);
+  const frameBoxesRef = useRef<FrameBox[]>([]);
+  const fragmentAnchorsRef = useRef<FragmentAnchor[]>([]);
 
   const displayEditorState = useMemo(
     () => (moveSession ? buildPreviewEditorState(editorState, moveSession) : editorState),
@@ -958,6 +960,14 @@ export function App() {
   }, [moveSession]);
 
   useEffect(() => {
+    frameBoxesRef.current = frameBoxes;
+  }, [frameBoxes]);
+
+  useEffect(() => {
+    fragmentAnchorsRef.current = fragmentAnchors;
+  }, [fragmentAnchors]);
+
+  useEffect(() => {
     if (!moveSession && !resizeSession) return;
     moveSessionRef.current = null;
     setMoveSession(null);
@@ -1027,6 +1037,8 @@ export function App() {
                 clientY: event.clientY,
                 previewLeft: nextPoint.x - session.pointerOffsetX,
                 previewTop: nextPoint.y - session.pointerOffsetY,
+                baseFrameBoxes: frameBoxesRef.current,
+                baseFragmentAnchors: fragmentAnchorsRef.current,
               };
               moveSessionRef.current = nextSession;
               return nextSession;
@@ -1078,6 +1090,8 @@ export function App() {
                   ...current,
                   previewLeft: nextPoint.x - current.pointerOffsetX,
                   previewTop: nextPoint.y - current.pointerOffsetY,
+                  baseFrameBoxes: frameBoxesRef.current,
+                  baseFragmentAnchors: fragmentAnchorsRef.current,
                 };
                 moveSessionRef.current = nextSession;
                 return nextSession;
@@ -1351,14 +1365,32 @@ export function App() {
         imageHeight: selectedImage.rect.height,
         previewLeft: selectedImage.rect.left,
         previewTop: selectedImage.rect.top,
-        baseFrameBoxes: frameBoxes,
-        baseFragmentAnchors: fragmentAnchors,
+        baseFrameBoxes: frameBoxesRef.current.length > 0 ? frameBoxesRef.current : frameBoxes,
+        baseFragmentAnchors:
+          fragmentAnchorsRef.current.length > 0 ? fragmentAnchorsRef.current : fragmentAnchors,
       };
       moveSessionRef.current = nextSession;
       setMoveSession(nextSession);
     },
     [fragmentAnchors, frameBoxes, selectedImage],
   );
+
+  const dragPreviewAttrs = useMemo(() => {
+    if (!moveSession) return null;
+    const node = editorState.doc.nodeAt(moveSession.pos);
+    if (!node || node.type.name !== "image") return null;
+    return readImageAttrs(node);
+  }, [editorState.doc, moveSession]);
+
+  const dragPreviewStyle = useMemo(() => {
+    if (!moveSession) return null;
+    return {
+      left: moveSession.previewLeft,
+      top: moveSession.previewTop,
+      width: moveSession.imageWidth,
+      height: moveSession.imageHeight,
+    };
+  }, [moveSession]);
 
   const onEditorPasteCapture = useCallback(
     (event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -1501,13 +1533,22 @@ export function App() {
                   aria-label="Move image"
                   className={`image-drag-surface ${moveSession ? "is-dragging" : ""}`}
                   style={{
-                    left: selectedImage.rect.left,
-                    top: selectedImage.rect.top,
-                    width: selectedImage.rect.width,
-                    height: selectedImage.rect.height,
+                    left: dragPreviewStyle?.left ?? selectedImage.rect.left,
+                    top: dragPreviewStyle?.top ?? selectedImage.rect.top,
+                    width: dragPreviewStyle?.width ?? selectedImage.rect.width,
+                    height: dragPreviewStyle?.height ?? selectedImage.rect.height,
                   }}
                   onPointerDown={startImageMove}
                 />
+                {moveSession && dragPreviewAttrs && dragPreviewStyle ? (
+                  <img
+                    aria-hidden
+                    alt=""
+                    className="image-live-preview"
+                    src={dragPreviewAttrs.src}
+                    style={dragPreviewStyle}
+                  />
+                ) : null}
                 {!moveSession ? (
                   <div
                     className="image-toolbar"
