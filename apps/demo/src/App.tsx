@@ -8,6 +8,7 @@ import {
 import {
   createLayoutInputFromOptions,
   defaultPremirrorOptions,
+  type ImageAlignment,
   type LayoutOutput,
 } from "@premirror/core";
 import { createPremirror } from "@premirror/prosemirror-adapter";
@@ -20,11 +21,11 @@ import {
 } from "@premirror/react";
 import { keymap } from "prosemirror-keymap";
 import { type Node as ProseMirrorNode } from "prosemirror-model";
-import { EditorState, TextSelection, type Transaction } from "prosemirror-state";
+import { EditorState, NodeSelection, TextSelection, type Transaction } from "prosemirror-state";
 import { baseKeymap, joinBackward, selectNodeBackward, toggleMark } from "prosemirror-commands";
 import { history, redo, undo } from "prosemirror-history";
 import { Decoration, DecorationSet } from "prosemirror-view";
-import { useCallback, useMemo, useState } from "react";
+import { type ChangeEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { LuBold, LuItalic, LuCode, LuSeparatorHorizontal, LuGithub, LuImage } from "react-icons/lu";
 
@@ -144,6 +145,37 @@ function styleForRunPosition(
   ].join(";");
 }
 
+const IMAGE_WIDTH_PRESETS = [320, 480, 640] as const;
+const MIN_IMAGE_WIDTH_PX = 180;
+const MIN_IMAGE_HEIGHT_PX = 120;
+
+type DemoImageAttrs = {
+  src: string;
+  alt: string;
+  widthPx: number;
+  heightPx: number;
+  align: ImageAlignment;
+};
+
+type SelectedImageInfo = {
+  pos: number;
+  attrs: DemoImageAttrs;
+  rect: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+};
+
+type ResizeSession = {
+  pos: number;
+  startX: number;
+  startWidth: number;
+  aspectRatio: number;
+  maxWidth: number;
+};
+
 type ParagraphBox = {
   from: number;
   to: number;
@@ -161,6 +193,49 @@ type ImageBox = {
   width: number;
   height: number;
 };
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function readImageAttrs(node: ProseMirrorNode): DemoImageAttrs {
+  return {
+    src: String(node.attrs.src ?? ""),
+    alt: String(node.attrs.alt ?? ""),
+    widthPx: Number(node.attrs.widthPx ?? 480),
+    heightPx: Number(node.attrs.heightPx ?? 270),
+    align: (node.attrs.align === "left" || node.attrs.align === "right" ? node.attrs.align : "center") as ImageAlignment,
+  };
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read image file"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Unexpected file reader result"));
+        return;
+      }
+      resolve(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function measureImage(dataUrl: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      resolve({
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      });
+    };
+    image.onerror = () => reject(new Error("Failed to decode image"));
+    image.src = dataUrl;
+  });
+}
 
 function clampPos(doc: ProseMirrorNode, pos: number): number {
   const max = Math.max(1, doc.content.size);
@@ -363,6 +438,28 @@ function buildFragmentDecorations(
   return DecorationSet.create(doc, decorations);
 }
 
+function getSelectedImageInfo(
+  editorState: EditorState,
+  projection: ReturnType<typeof useProjectedSelection>,
+): SelectedImageInfo | null {
+  const selection = editorState.selection;
+  if (!(selection instanceof NodeSelection) || selection.node.type.name !== "image") {
+    return null;
+  }
+  const rect = projection.rects[0];
+  if (!rect) return null;
+  return {
+    pos: selection.from,
+    attrs: readImageAttrs(selection.node),
+    rect: {
+      left: rect.x,
+      top: rect.y,
+      width: rect.width,
+      height: rect.height,
+    },
+  };
+}
+
 export function App() {
   const options = useMemo(() => {
     const defaults = defaultPremirrorOptions();
@@ -380,6 +477,8 @@ export function App() {
   const [editorState, setEditorState] = useState(() => buildInitialState(runtime));
   const [showDebug, setShowDebug] = useState(false);
   const [pageLayoutMode, setPageLayoutMode] = useState<PageLayoutMode>("spread");
+  const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { layout, diagnostics } = usePremirrorEngine({
     editorState,
@@ -387,15 +486,31 @@ export function App() {
     layoutInput,
   });
 
+  const contentFrameWidth = layoutInput.page.widthPx - layoutInput.margins.leftPx - layoutInput.margins.rightPx;
+
   const projection = useProjectedSelection(editorState, layout, pageLayoutMode);
   const fragmentDecorations = useMemo(
     () => buildFragmentDecorations(editorState.doc, layout, pageLayoutMode),
     [editorState.doc, layout, pageLayoutMode],
   );
+  const selectedImage = useMemo(
+    () => getSelectedImageInfo(editorState, projection),
+    [editorState, projection],
+  );
 
   const dispatch = useCallback((tr: Transaction) => {
     setEditorState((s) => s.apply(tr));
   }, []);
+
+  const applyTransaction = useCallback(
+    (build: (state: EditorState) => Transaction | null) => {
+      setEditorState((state) => {
+        const tr = build(state);
+        return tr ? state.apply(tr) : state;
+      });
+    },
+    [],
+  );
 
   const run = useCallback(
     (fn: (s: EditorState, d?: (tr: Parameters<EditorState["apply"]>[0]) => void) => boolean) => {
@@ -403,6 +518,61 @@ export function App() {
     },
     [editorState, dispatch],
   );
+
+  const updateImageAttrsAtPos = useCallback(
+    (pos: number, patch: Partial<DemoImageAttrs>) => {
+      applyTransaction((state) => {
+        const node = state.doc.nodeAt(pos);
+        if (!node || node.type.name !== "image") return null;
+        let tr = state.tr.setNodeMarkup(pos, undefined, {
+          ...node.attrs,
+          ...patch,
+        });
+        tr = tr.setSelection(NodeSelection.create(tr.doc, pos)).scrollIntoView();
+        return tr;
+      });
+    },
+    [applyTransaction],
+  );
+
+  useEffect(() => {
+    if (!resizeSession) return;
+
+    const onPointerMove = (event: PointerEvent) => {
+      const nextWidth = clampNumber(
+        resizeSession.startWidth + (event.clientX - resizeSession.startX),
+        MIN_IMAGE_WIDTH_PX,
+        resizeSession.maxWidth,
+      );
+      const nextHeight = Math.max(
+        MIN_IMAGE_HEIGHT_PX,
+        Math.round(nextWidth / Math.max(0.1, resizeSession.aspectRatio)),
+      );
+      updateImageAttrsAtPos(resizeSession.pos, {
+        widthPx: Math.round(nextWidth),
+        heightPx: nextHeight,
+      });
+    };
+
+    const onPointerUp = () => {
+      setResizeSession(null);
+    };
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [resizeSession, updateImageAttrsAtPos]);
 
   const strongMark = demoSchema.marks.strong;
   const emMark = demoSchema.marks.em;
@@ -442,6 +612,72 @@ export function App() {
       return true;
     });
   }, [run]);
+
+  const preventToolbarFocus = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    event.preventDefault();
+  }, []);
+
+  const setSelectedImageAlign = useCallback(
+    (align: ImageAlignment) => {
+      if (!selectedImage) return;
+      updateImageAttrsAtPos(selectedImage.pos, { align });
+    },
+    [selectedImage, updateImageAttrsAtPos],
+  );
+
+  const setSelectedImageWidth = useCallback(
+    (widthPx: number) => {
+      if (!selectedImage) return;
+      const aspectRatio = selectedImage.attrs.widthPx / Math.max(1, selectedImage.attrs.heightPx);
+      const nextWidth = clampNumber(widthPx, MIN_IMAGE_WIDTH_PX, contentFrameWidth);
+      const nextHeight = Math.max(MIN_IMAGE_HEIGHT_PX, Math.round(nextWidth / Math.max(0.1, aspectRatio)));
+      updateImageAttrsAtPos(selectedImage.pos, {
+        widthPx: nextWidth,
+        heightPx: nextHeight,
+      });
+    },
+    [contentFrameWidth, selectedImage, updateImageAttrsAtPos],
+  );
+
+  const triggerReplaceImage = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const onReplaceImage = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file || !selectedImage) return;
+      const dataUrl = await readFileAsDataUrl(file);
+      const measured = await measureImage(dataUrl);
+      const aspectRatio = measured.width / Math.max(1, measured.height);
+      const nextWidth = clampNumber(measured.width, MIN_IMAGE_WIDTH_PX, contentFrameWidth);
+      const nextHeight = Math.max(MIN_IMAGE_HEIGHT_PX, Math.round(nextWidth / Math.max(0.1, aspectRatio)));
+      updateImageAttrsAtPos(selectedImage.pos, {
+        src: dataUrl,
+        alt: file.name,
+        widthPx: nextWidth,
+        heightPx: nextHeight,
+      });
+      event.target.value = "";
+    },
+    [contentFrameWidth, selectedImage, updateImageAttrsAtPos],
+  );
+
+  const startImageResize = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!selectedImage) return;
+      setResizeSession({
+        pos: selectedImage.pos,
+        startX: event.clientX,
+        startWidth: selectedImage.attrs.widthPx,
+        aspectRatio: selectedImage.attrs.widthPx / Math.max(1, selectedImage.attrs.heightPx),
+        maxWidth: contentFrameWidth,
+      });
+    },
+    [contentFrameWidth, selectedImage],
+  );
 
   const pageBreak = useCallback(() => {
     run((s, d) => runtime.commands.insertPageBreak(s, d));
@@ -528,6 +764,87 @@ export function App() {
                 </ProseMirror>
               }
             />
+            {selectedImage ? (
+              <>
+                <div
+                  className="image-toolbar"
+                  style={{
+                    left: selectedImage.rect.left,
+                    top: Math.max(0, selectedImage.rect.top - 48),
+                  }}
+                >
+                  <div className="image-toolbar-group">
+                    <button
+                      type="button"
+                      className={`image-toolbar-btn ${selectedImage.attrs.align === "left" ? "is-active" : ""}`}
+                      onPointerDown={preventToolbarFocus}
+                      onClick={() => setSelectedImageAlign("left")}
+                    >
+                      Left
+                    </button>
+                    <button
+                      type="button"
+                      className={`image-toolbar-btn ${selectedImage.attrs.align === "center" ? "is-active" : ""}`}
+                      onPointerDown={preventToolbarFocus}
+                      onClick={() => setSelectedImageAlign("center")}
+                    >
+                      Center
+                    </button>
+                    <button
+                      type="button"
+                      className={`image-toolbar-btn ${selectedImage.attrs.align === "right" ? "is-active" : ""}`}
+                      onPointerDown={preventToolbarFocus}
+                      onClick={() => setSelectedImageAlign("right")}
+                    >
+                      Right
+                    </button>
+                  </div>
+                  <div className="image-toolbar-group">
+                    {IMAGE_WIDTH_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        className={`image-toolbar-btn ${Math.abs(selectedImage.attrs.widthPx - preset) < 8 ? "is-active" : ""}`}
+                        onPointerDown={preventToolbarFocus}
+                        onClick={() => setSelectedImageWidth(preset)}
+                      >
+                        {preset}px
+                      </button>
+                    ))}
+                  </div>
+                  <div className="image-toolbar-group">
+                    <button
+                      type="button"
+                      className="image-toolbar-btn"
+                      onPointerDown={preventToolbarFocus}
+                      onClick={triggerReplaceImage}
+                    >
+                      Replace
+                    </button>
+                    <span className="image-toolbar-meta">
+                      {Math.round(selectedImage.attrs.widthPx)}×{Math.round(selectedImage.attrs.heightPx)}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Resize image"
+                  className="image-resize-handle"
+                  style={{
+                    left: selectedImage.rect.left + selectedImage.rect.width - 8,
+                    top: selectedImage.rect.top + selectedImage.rect.height - 8,
+                  }}
+                  onPointerDown={startImageResize}
+                />
+                <input
+                  ref={fileInputRef}
+                  className="image-file-input"
+                  type="file"
+                  accept="image/*"
+                  onChange={onReplaceImage}
+                />
+              </>
+            ) : null}
             {showDebug ? (
               <div className="selection-overlay" aria-hidden>
                 {projection.rects.map((r, i) => (

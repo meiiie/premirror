@@ -244,6 +244,74 @@ html, body {
   outline-offset: 2px;
 }
 
+.image-toolbar {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(203, 213, 225, 0.95);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(12px);
+}
+
+.image-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.image-toolbar-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #334155;
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  font: 600 12px/1 "Helvetica Neue", Helvetica, Arial, sans-serif;
+  cursor: pointer;
+}
+
+.image-toolbar-btn:hover {
+  background: #eff6ff;
+  color: var(--accent);
+}
+
+.image-toolbar-btn.is-active {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+}
+
+.image-toolbar-meta {
+  min-width: 70px;
+  text-align: right;
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #64748b;
+}
+
+.image-resize-handle {
+  position: absolute;
+  z-index: 21;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+  cursor: ew-resize;
+}
+
+.image-file-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+}
+
 .premirror-fragment-run {
   position: absolute;
   display: inline-block;
