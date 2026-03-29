@@ -173,11 +173,13 @@ html, body {
 
 .premirror-stack {
   position: relative;
+  width: fit-content;
+  margin: 0 auto;
 }
 
 /* Page viewport (from @premirror/react) */
 .premirror-page-viewport {
-  margin: 0 auto;
+  margin: 0;
 }
 
 .premirror-editor-surface .ProseMirror {
