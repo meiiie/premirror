@@ -479,6 +479,7 @@ function buildFragmentDecorations(
   doc: ProseMirrorNode,
   layout: LayoutOutput,
   pageLayoutMode: PageLayoutMode,
+  selectedImagePos: number | null,
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const paragraphBoxes = new Map<string, ParagraphBox>();
@@ -590,9 +591,13 @@ function buildFragmentDecorations(
   }
 
   for (const image of imageBoxes) {
+    const imageClass =
+      selectedImagePos === image.from
+        ? "premirror-image-block ProseMirror-selectednode"
+        : "premirror-image-block";
     decorations.push(
       Decoration.node(image.from, image.to, {
-        class: "premirror-image-block",
+        class: imageClass,
         style: [
           "position:absolute",
           `left:${image.left}px`,
@@ -703,9 +708,15 @@ export function App() {
     [layout, pageLayoutMode],
   );
   const imageBoxes = useMemo(() => collectImageBoxes(layout, pageLayoutMode), [layout, pageLayoutMode]);
+  const selectedImagePos = useMemo(() => {
+    const selection = editorState.selection;
+    return selection instanceof NodeSelection && selection.node.type.name === "image"
+      ? selection.from
+      : null;
+  }, [editorState.selection]);
   const fragmentDecorations = useMemo(
-    () => buildFragmentDecorations(editorState.doc, layout, pageLayoutMode),
-    [editorState.doc, layout, pageLayoutMode],
+    () => buildFragmentDecorations(editorState.doc, layout, pageLayoutMode, selectedImagePos),
+    [editorState.doc, layout, pageLayoutMode, selectedImagePos],
   );
   const selectedImage = useMemo(
     () => getSelectedImageInfo(editorState, imageBoxes),
