@@ -30,6 +30,7 @@ import {
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
   type PointerEvent as ReactPointerEvent,
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -212,6 +213,20 @@ type MoveSession = {
   previewTop: number;
   baseFrameBoxes: FrameBox[];
   baseFragmentAnchors: FragmentAnchor[];
+};
+
+type DragVisual = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type PendingDragPoint = {
+  clientX: number;
+  clientY: number;
+  contentX: number;
+  contentY: number;
 };
 
 type ImportedImagePayload = {
@@ -911,6 +926,7 @@ export function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [pageLayoutMode, setPageLayoutMode] = useState<PageLayoutMode>("spread");
   const [moveSession, setMoveSession] = useState<MoveSession | null>(null);
+  const [dragVisual, setDragVisual] = useState<DragVisual | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
   const replaceFileInputRef = useRef<HTMLInputElement | null>(null);
   const insertFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -918,6 +934,8 @@ export function App() {
   const viewportWrapRef = useRef<HTMLDivElement | null>(null);
   const frameBoxesRef = useRef<FrameBox[]>([]);
   const fragmentAnchorsRef = useRef<FragmentAnchor[]>([]);
+  const pendingDragPointRef = useRef<PendingDragPoint | null>(null);
+  const dragRafRef = useRef<number | null>(null);
 
   const displayEditorState = useMemo(
     () => (moveSession ? buildPreviewEditorState(editorState, moveSession) : editorState),
@@ -1006,6 +1024,7 @@ export function App() {
     if (!moveSession && !resizeSession) return;
     moveSessionRef.current = null;
     setMoveSession(null);
+    setDragVisual(null);
     setResizeSession(null);
   }, [pageLayoutMode]);
 
@@ -1053,25 +1072,21 @@ export function App() {
     [applyTransaction],
   );
 
-  useEffect(() => {
-    if (!moveSession) return;
-
-    const onPointerMove = (event: PointerEvent) => {
-      const nextPoint = pointerToViewportContentPoint(
-        event.clientX,
-        event.clientY,
-        viewportWrapRef.current,
-      );
+  const flushPendingDragPoint = useCallback(() => {
+    const pending = pendingDragPointRef.current;
+    pendingDragPointRef.current = null;
+    if (!pending) return;
+    startTransition(() => {
       setMoveSession((session) =>
         !session
           ? null
           : (() => {
               const nextSession = {
                 ...session,
-                clientX: event.clientX,
-                clientY: event.clientY,
-                previewLeft: nextPoint.x - session.pointerOffsetX,
-                previewTop: nextPoint.y - session.pointerOffsetY,
+                clientX: pending.clientX,
+                clientY: pending.clientY,
+                previewLeft: pending.contentX - session.pointerOffsetX,
+                previewTop: pending.contentY - session.pointerOffsetY,
                 baseFrameBoxes: frameBoxesRef.current,
                 baseFragmentAnchors: fragmentAnchorsRef.current,
               };
@@ -1079,11 +1094,65 @@ export function App() {
               return nextSession;
             })(),
       );
+    });
+  }, []);
+
+  const scheduleDragUpdate = useCallback(
+    (clientX: number, clientY: number, container: HTMLDivElement | null) => {
+      const nextPoint = pointerToViewportContentPoint(clientX, clientY, container);
+      const session = moveSessionRef.current;
+      if (session) {
+        setDragVisual({
+          left: nextPoint.x - session.pointerOffsetX,
+          top: nextPoint.y - session.pointerOffsetY,
+          width: session.imageWidth,
+          height: session.imageHeight,
+        });
+      }
+      pendingDragPointRef.current = {
+        clientX,
+        clientY,
+        contentX: nextPoint.x,
+        contentY: nextPoint.y,
+      };
+      if (dragRafRef.current !== null) return;
+      dragRafRef.current = window.requestAnimationFrame(() => {
+        dragRafRef.current = null;
+        flushPendingDragPoint();
+      });
+    },
+    [flushPendingDragPoint],
+  );
+
+  useEffect(() => {
+    if (!moveSession) return;
+
+    const onPointerMove = (event: PointerEvent) => {
+      scheduleDragUpdate(event.clientX, event.clientY, viewportWrapRef.current);
     };
 
     const onPointerUp = () => {
-      const session = moveSessionRef.current;
+      if (dragRafRef.current !== null) {
+        window.cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
+      const current = moveSessionRef.current;
+      const pending = pendingDragPointRef.current;
+      const session =
+        current && pending
+          ? {
+              ...current,
+              clientX: pending.clientX,
+              clientY: pending.clientY,
+              previewLeft: pending.contentX - current.pointerOffsetX,
+              previewTop: pending.contentY - current.pointerOffsetY,
+              baseFrameBoxes: frameBoxesRef.current,
+              baseFragmentAnchors: fragmentAnchorsRef.current,
+            }
+          : current;
+      pendingDragPointRef.current = null;
       if (session) {
+        moveSessionRef.current = session;
         commitImageMove(session);
       }
       window.setTimeout(() => {
@@ -1094,6 +1163,7 @@ export function App() {
       }, 0);
       moveSessionRef.current = null;
       setMoveSession(null);
+      setDragVisual(null);
     };
 
     const scrollMargin = 96;
@@ -1112,26 +1182,7 @@ export function App() {
         didScroll = true;
       }
       if (didScroll) {
-        const nextPoint = pointerToViewportContentPoint(
-          session.clientX,
-          session.clientY,
-          container,
-        );
-        setMoveSession((current) =>
-          !current
-            ? null
-            : (() => {
-                const nextSession = {
-                  ...current,
-                  previewLeft: nextPoint.x - current.pointerOffsetX,
-                  previewTop: nextPoint.y - current.pointerOffsetY,
-                  baseFrameBoxes: frameBoxesRef.current,
-                  baseFragmentAnchors: fragmentAnchorsRef.current,
-                };
-                moveSessionRef.current = nextSession;
-                return nextSession;
-              })(),
-        );
+        scheduleDragUpdate(session.clientX, session.clientY, container);
       }
     }, 16);
 
@@ -1147,10 +1198,14 @@ export function App() {
       document.body.style.cursor = previousCursor;
       document.body.style.userSelect = previousUserSelect;
       window.clearInterval(autoScrollInterval);
+      if (dragRafRef.current !== null) {
+        window.cancelAnimationFrame(dragRafRef.current);
+        dragRafRef.current = null;
+      }
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
     };
-  }, [commitImageMove, moveSession]);
+  }, [commitImageMove, moveSession, scheduleDragUpdate]);
 
   useEffect(() => {
     if (!resizeSession) return;
@@ -1406,6 +1461,12 @@ export function App() {
       };
       moveSessionRef.current = nextSession;
       setMoveSession(nextSession);
+      setDragVisual({
+        left: selectedImage.rect.left,
+        top: selectedImage.rect.top,
+        width: selectedImage.rect.width,
+        height: selectedImage.rect.height,
+      });
     },
     [fragmentAnchors, frameBoxes, selectedImage],
   );
@@ -1418,20 +1479,23 @@ export function App() {
   }, [editorState.doc, moveSession]);
 
   const dragPreviewStyle = useMemo(() => {
+    if (dragVisual) return dragVisual;
     if (!moveSession) return null;
-    if (selectedImage) {
-      return {
-        left: selectedImage.rect.left,
-        top: selectedImage.rect.top,
-        width: selectedImage.rect.width,
-        height: selectedImage.rect.height,
-      };
-    }
     return {
       left: moveSession.previewLeft,
       top: moveSession.previewTop,
       width: moveSession.imageWidth,
       height: moveSession.imageHeight,
+    };
+  }, [dragVisual, moveSession]);
+
+  const dragLayoutPlaceholderStyle = useMemo(() => {
+    if (!moveSession || !selectedImage) return null;
+    return {
+      left: selectedImage.rect.left,
+      top: selectedImage.rect.top,
+      width: selectedImage.rect.width,
+      height: selectedImage.rect.height,
     };
   }, [moveSession, selectedImage]);
 
@@ -1583,6 +1647,13 @@ export function App() {
                   }}
                   onPointerDown={startImageMove}
                 />
+                {dragLayoutPlaceholderStyle ? (
+                  <div
+                    aria-hidden
+                    className="image-layout-placeholder"
+                    style={dragLayoutPlaceholderStyle}
+                  />
+                ) : null}
                 {moveSession && dragPreviewAttrs && dragPreviewStyle ? (
                   <img
                     aria-hidden
