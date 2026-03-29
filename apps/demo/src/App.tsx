@@ -214,13 +214,6 @@ type MoveSession = {
   baseFragmentAnchors: FragmentAnchor[];
 };
 
-type DragVisual = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
 type PendingDragPoint = {
   clientX: number;
   clientY: number;
@@ -547,6 +540,13 @@ function pointerToViewportContentPoint(
   };
 }
 
+function pointerContentPointFromSession(session: MoveSession): { x: number; y: number } {
+  return {
+    x: session.previewLeft + session.pointerOffsetX,
+    y: session.previewTop + session.pointerOffsetY,
+  };
+}
+
 function collectImageBoxes(
   layout: LayoutOutput,
   pageLayoutMode: PageLayoutMode,
@@ -813,9 +813,8 @@ function buildImageMoveTransaction(
   session: MoveSession,
   options?: { scrollIntoView?: boolean },
 ): Transaction | null {
-  const centerX = session.previewLeft + session.imageWidth / 2;
-  const centerY = session.previewTop + session.imageHeight / 2;
-  const targetFrame = findFrameForPoint(centerX, centerY, session.baseFrameBoxes);
+  const pointerPoint = pointerContentPointFromSession(session);
+  const targetFrame = findFrameForPoint(pointerPoint.x, pointerPoint.y, session.baseFrameBoxes);
   if (!targetFrame) {
     const node = state.doc.nodeAt(session.pos);
     if (!node || node.type.name !== "image") return null;
@@ -914,7 +913,6 @@ export function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [pageLayoutMode, setPageLayoutMode] = useState<PageLayoutMode>("spread");
   const [moveSession, setMoveSession] = useState<MoveSession | null>(null);
-  const [dragVisual, setDragVisual] = useState<DragVisual | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
   const replaceFileInputRef = useRef<HTMLInputElement | null>(null);
   const insertFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -969,9 +967,8 @@ export function App() {
   );
   const activeDropFrame = useMemo(() => {
     if (!moveSession) return null;
-    const centerX = moveSession.previewLeft + moveSession.imageWidth / 2;
-    const centerY = moveSession.previewTop + moveSession.imageHeight / 2;
-    return findFrameForPoint(centerX, centerY, frameBoxes);
+    const pointerPoint = pointerContentPointFromSession(moveSession);
+    return findFrameForPoint(pointerPoint.x, pointerPoint.y, frameBoxes);
   }, [frameBoxes, moveSession]);
   const showDropFrame = useMemo(() => {
     if (!selectedImage || !activeDropFrame || !moveSession) return null;
@@ -1012,7 +1009,6 @@ export function App() {
     if (!moveSession && !resizeSession) return;
     moveSessionRef.current = null;
     setMoveSession(null);
-    setDragVisual(null);
     setResizeSession(null);
   }, [pageLayoutMode]);
 
@@ -1086,15 +1082,6 @@ export function App() {
   const scheduleDragUpdate = useCallback(
     (clientX: number, clientY: number, container: HTMLDivElement | null) => {
       const nextPoint = pointerToViewportContentPoint(clientX, clientY, container);
-      const session = moveSessionRef.current;
-      if (session) {
-        setDragVisual({
-          left: nextPoint.x - session.pointerOffsetX,
-          top: nextPoint.y - session.pointerOffsetY,
-          width: session.imageWidth,
-          height: session.imageHeight,
-        });
-      }
       pendingDragPointRef.current = {
         clientX,
         clientY,
@@ -1149,7 +1136,6 @@ export function App() {
       }, 0);
       moveSessionRef.current = null;
       setMoveSession(null);
-      setDragVisual(null);
     };
 
     const scrollMargin = 96;
@@ -1447,43 +1433,9 @@ export function App() {
       };
       moveSessionRef.current = nextSession;
       setMoveSession(nextSession);
-      setDragVisual({
-        left: selectedImage.rect.left,
-        top: selectedImage.rect.top,
-        width: selectedImage.rect.width,
-        height: selectedImage.rect.height,
-      });
     },
     [fragmentAnchors, frameBoxes, selectedImage],
   );
-
-  const dragPreviewAttrs = useMemo(() => {
-    if (!moveSession) return null;
-    const node = editorState.doc.nodeAt(moveSession.pos);
-    if (!node || node.type.name !== "image") return null;
-    return readImageAttrs(node);
-  }, [editorState.doc, moveSession]);
-
-  const dragPreviewStyle = useMemo(() => {
-    if (dragVisual) return dragVisual;
-    if (!moveSession) return null;
-    return {
-      left: moveSession.previewLeft,
-      top: moveSession.previewTop,
-      width: moveSession.imageWidth,
-      height: moveSession.imageHeight,
-    };
-  }, [dragVisual, moveSession]);
-
-  const dragLayoutPlaceholderStyle = useMemo(() => {
-    if (!moveSession || !selectedImage) return null;
-    return {
-      left: selectedImage.rect.left,
-      top: selectedImage.rect.top,
-      width: selectedImage.rect.width,
-      height: selectedImage.rect.height,
-    };
-  }, [moveSession, selectedImage]);
 
   const onEditorPasteCapture = useCallback(
     (event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -1626,29 +1578,13 @@ export function App() {
                   aria-label="Move image"
                   className={`image-drag-surface ${moveSession ? "is-dragging" : ""}`}
                   style={{
-                    left: dragPreviewStyle?.left ?? selectedImage.rect.left,
-                    top: dragPreviewStyle?.top ?? selectedImage.rect.top,
-                    width: dragPreviewStyle?.width ?? selectedImage.rect.width,
-                    height: dragPreviewStyle?.height ?? selectedImage.rect.height,
+                    left: selectedImage.rect.left,
+                    top: selectedImage.rect.top,
+                    width: selectedImage.rect.width,
+                    height: selectedImage.rect.height,
                   }}
                   onPointerDown={startImageMove}
                 />
-                {dragLayoutPlaceholderStyle ? (
-                  <div
-                    aria-hidden
-                    className="image-layout-placeholder"
-                    style={dragLayoutPlaceholderStyle}
-                  />
-                ) : null}
-                {moveSession && dragPreviewAttrs && dragPreviewStyle ? (
-                  <img
-                    aria-hidden
-                    alt=""
-                    className="image-live-preview"
-                    src={dragPreviewAttrs.src}
-                    style={dragPreviewStyle}
-                  />
-                ) : null}
                 {!moveSession ? (
                   <div
                     className="image-toolbar"

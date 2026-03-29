@@ -32,5 +32,8 @@ describe("@premirror/core", () => {
     expect(input.policies.widowLinesMin).toBe(
       DEFAULT_LAYOUT_POLICIES.widowLinesMin,
     );
+    expect(input.policies.floatWrapMarginPx).toBe(
+      DEFAULT_LAYOUT_POLICIES.floatWrapMarginPx,
+    );
   });
 });

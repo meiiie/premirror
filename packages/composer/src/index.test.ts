@@ -198,10 +198,11 @@ describe("@premirror/composer", () => {
 
     const linesBesideImage = textFragment.lines.filter((line) => line.y < 160);
     const linesBelowImage = textFragment.lines.filter((line) => line.y >= 160);
+    const wrapMargin = makeInput().policies.floatWrapMarginPx ?? 0;
 
     expect(linesBesideImage.length).toBeGreaterThan(0);
     expect(linesBelowImage.length).toBeGreaterThan(0);
-    expect(linesBesideImage.every((line) => (line.runs[0]?.x ?? 0) >= 220)).toBe(true);
+    expect(linesBesideImage.every((line) => (line.runs[0]?.x ?? 0) >= 220 + wrapMargin)).toBe(true);
     expect(linesBelowImage.some((line) => (line.runs[0]?.x ?? 0) === 0)).toBe(true);
   });
 

@@ -426,11 +426,35 @@ function toSnapshotImpl(state: EditorState, typography: TypographyConfig): Unmea
 
 // --- Measurement -------------------------------------------------------------
 
+const MAX_MEASUREMENT_CACHE_ENTRIES = 4096;
+const measurementCache = new Map<string, MeasuredRun>();
+
+function measurementCacheKey(run: StyledRun): string {
+  return `${run.id}\u0000${run.font}\u0000${run.text}`;
+}
+
+function storeMeasuredRun(cacheKey: string, measuredRun: MeasuredRun): MeasuredRun {
+  measurementCache.set(cacheKey, measuredRun);
+  if (measurementCache.size > MAX_MEASUREMENT_CACHE_ENTRIES) {
+    const oldestKey = measurementCache.keys().next().value;
+    if (typeof oldestKey === "string") {
+      measurementCache.delete(oldestKey);
+    }
+  }
+  return measuredRun;
+}
+
 function measureSnapshotImpl(snapshot: UnmeasuredDocumentSnapshot): MeasuredDocumentSnapshot {
   const measuredRuns: Record<string, MeasuredRun> = {};
   const UNBOUNDED_WIDTH = 1_000_000_000;
   for (const block of snapshot.blocks) {
     for (const run of block.runs) {
+      const cacheKey = measurementCacheKey(run);
+      const cached = measurementCache.get(cacheKey);
+      if (cached) {
+        measuredRuns[run.id] = cached;
+        continue;
+      }
       try {
         const prepared = prepareWithSegments(run.text, run.font, { whiteSpace: "pre-wrap" });
         const firstLine = layoutNextLine(
@@ -440,14 +464,15 @@ function measureSnapshotImpl(snapshot: UnmeasuredDocumentSnapshot): MeasuredDocu
         );
         const measuredWidth =
           !firstLine && run.text.length > 0 ? run.text.length * 7 : (firstLine?.width ?? 0);
-        measuredRuns[run.id] = {
+        const measuredRun: MeasuredRun = {
           runId: run.id,
           prepared,
           widthPx: measuredWidth,
           textLength: run.text.length,
         };
+        measuredRuns[run.id] = storeMeasuredRun(cacheKey, measuredRun);
       } catch {
-        measuredRuns[run.id] = {
+        const measuredRun: MeasuredRun = {
           runId: run.id,
           prepared: {
             kind: "premirror-measurement-fallback",
@@ -457,6 +482,7 @@ function measureSnapshotImpl(snapshot: UnmeasuredDocumentSnapshot): MeasuredDocu
           widthPx: run.text.length * 7,
           textLength: run.text.length,
         };
+        measuredRuns[run.id] = storeMeasuredRun(cacheKey, measuredRun);
       }
     }
   }

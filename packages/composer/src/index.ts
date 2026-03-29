@@ -58,6 +58,7 @@ type ResolvedPolicies = {
   keepWithNextEnabled: boolean;
   minSlotWidthPx: number;
   slotSelectionPolicy: "single_slot_flow" | "multi_slot_fill";
+  floatWrapMarginPx: number;
 };
 
 function resolvePolicies(input: LayoutInput): ResolvedPolicies {
@@ -68,6 +69,7 @@ function resolvePolicies(input: LayoutInput): ResolvedPolicies {
     keepWithNextEnabled: p.keepWithNextEnabled ?? DEFAULT_LAYOUT_POLICIES.keepWithNextEnabled ?? true,
     minSlotWidthPx: p.minSlotWidthPx ?? DEFAULT_LAYOUT_POLICIES.minSlotWidthPx ?? 48,
     slotSelectionPolicy: p.slotSelectionPolicy ?? "single_slot_flow",
+    floatWrapMarginPx: p.floatWrapMarginPx ?? DEFAULT_LAYOUT_POLICIES.floatWrapMarginPx ?? 18,
   };
 }
 
@@ -842,6 +844,7 @@ export function composeLayout(
       }
 
       if (placement === "float") {
+        const wrapMargin = policies.floatWrapMarginPx;
         const maxX = Math.max(0, frame.width - image.width);
         const offsetX = clampNumber(
           readNonNegativeNumber(block.attrs["offsetXPx"], imageXOffset(image.align, frame.width, image.width)),
@@ -882,10 +885,15 @@ export function composeLayout(
         });
         activeObstacles.push({
           id: `${block.id}-page-${pageIndex}`,
-          yStart: frame.y + y,
-          yEnd: frame.y + y + image.height,
+          yStart: frame.y + Math.max(0, y - wrapMargin),
+          yEnd: frame.y + Math.min(frame.height, y + image.height + wrapMargin),
           intervalsForBand() {
-            return [{ start: offsetX, end: offsetX + image.width }];
+            return [
+              {
+                start: Math.max(0, offsetX - wrapMargin),
+                end: Math.min(frame.width, offsetX + image.width + wrapMargin),
+              },
+            ];
           },
         });
         continue;

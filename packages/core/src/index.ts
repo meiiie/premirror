@@ -35,6 +35,7 @@ export type LayoutPolicyConfig = {
   keepWithNextEnabled?: boolean;
   minSlotWidthPx?: number;
   slotSelectionPolicy?: "single_slot_flow" | "multi_slot_fill";
+  floatWrapMarginPx?: number;
 };
 
 export type PremirrorOptions = {
@@ -238,6 +239,7 @@ export const DEFAULT_LAYOUT_POLICIES: LayoutPolicyConfig = {
   keepWithNextEnabled: true,
   minSlotWidthPx: 48,
   slotSelectionPolicy: "single_slot_flow",
+  floatWrapMarginPx: 18,
 };
 
 export function pageSpecForPreset(preset: PagePreset): PageSpec {
