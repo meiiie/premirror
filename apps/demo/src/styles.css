@@ -282,13 +282,17 @@ html, body {
   z-index: 20;
   display: flex;
   align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   gap: 0.45rem;
+  row-gap: 0.35rem;
   padding: 0.4rem 0.55rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(203, 213, 225, 0.95);
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
   backdrop-filter: blur(12px);
+  max-width: min(760px, calc(100vw - 2rem));
 }
 
 .image-toolbar-group {

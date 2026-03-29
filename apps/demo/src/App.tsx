@@ -210,6 +210,8 @@ type MoveSession = {
   imageHeight: number;
   previewLeft: number;
   previewTop: number;
+  baseFrameBoxes: FrameBox[];
+  baseFragmentAnchors: FragmentAnchor[];
 };
 
 type ImportedImagePayload = {
@@ -567,7 +569,7 @@ function buildFragmentDecorations(
   layout: LayoutOutput,
   pageLayoutMode: PageLayoutMode,
   selectedImagePos: number | null,
-  moveSession: MoveSession | null,
+  draggingImagePos: number | null,
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const paragraphBoxes = new Map<string, ParagraphBox>();
@@ -683,23 +685,18 @@ function buildFragmentDecorations(
     if (selectedImagePos === image.from) {
       imageClasses.push("ProseMirror-selectednode");
     }
-    const isLiveDragging = moveSession?.pos === image.from;
-    if (isLiveDragging) {
+    if (draggingImagePos === image.from) {
       imageClasses.push("is-live-dragging");
     }
-    const liveLeft = isLiveDragging ? moveSession.previewLeft : image.left;
-    const liveTop = isLiveDragging ? moveSession.previewTop : image.top;
-    const liveWidth = isLiveDragging ? moveSession.imageWidth : image.width;
-    const liveHeight = isLiveDragging ? moveSession.imageHeight : image.height;
     decorations.push(
       Decoration.node(image.from, image.to, {
         class: imageClasses.join(" "),
         style: [
           "position:absolute",
-          `left:${liveLeft}px`,
-          `top:${liveTop}px`,
-          `width:${Math.max(1, liveWidth)}px`,
-          `height:${Math.max(1, liveHeight)}px`,
+          `left:${image.left}px`,
+          `top:${image.top}px`,
+          `width:${Math.max(1, image.width)}px`,
+          `height:${Math.max(1, image.height)}px`,
           "margin:0",
         ].join(";"),
       }),
@@ -762,6 +759,101 @@ function getSelectedImageInfo(
   };
 }
 
+function buildImageMoveTransaction(
+  state: EditorState,
+  session: MoveSession,
+  options?: { scrollIntoView?: boolean },
+): Transaction | null {
+  const centerX = session.previewLeft + session.imageWidth / 2;
+  const centerY = session.previewTop + session.imageHeight / 2;
+  const targetFrame = findFrameForPoint(centerX, centerY, session.baseFrameBoxes);
+  if (!targetFrame) {
+    const node = state.doc.nodeAt(session.pos);
+    if (!node || node.type.name !== "image") return null;
+    let tr = state.tr.setNodeMarkup(session.pos, undefined, {
+      ...node.attrs,
+      placement: "float",
+    });
+    tr = tr.setSelection(NodeSelection.create(tr.doc, session.pos));
+    return options?.scrollIntoView === false ? tr : tr.scrollIntoView();
+  }
+
+  const node = state.doc.nodeAt(session.pos);
+  if (!node || node.type.name !== "image") return null;
+
+  const frameAnchors = session.baseFragmentAnchors
+    .filter(
+      (anchor) =>
+        anchor.pageIndex === targetFrame.pageIndex &&
+        anchor.frameIndex === targetFrame.frameIndex &&
+        anchor.pos !== session.pos,
+    )
+    .sort((a, b) => a.top - b.top);
+
+  const precedingAnchor =
+    [...frameAnchors]
+      .reverse()
+      .find((anchor) => anchor.top + (anchor.bottom - anchor.top) / 2 <= centerY) ?? null;
+
+  let insertPos = session.pos;
+  let anchorTop = targetFrame.top;
+
+  if (precedingAnchor) {
+    const precedingNode = state.doc.nodeAt(precedingAnchor.pos);
+    insertPos = precedingAnchor.pos + (precedingNode?.nodeSize ?? 0);
+    anchorTop = precedingAnchor.bottom;
+  } else if (frameAnchors[0]) {
+    insertPos = frameAnchors[0].pos;
+    anchorTop = targetFrame.top;
+  } else {
+    insertPos = Math.max(1, state.doc.content.size);
+    anchorTop = targetFrame.top;
+  }
+
+  const maxOffsetX = Math.max(0, targetFrame.width - session.imageWidth);
+  const maxOffsetY = Math.max(
+    0,
+    targetFrame.top + targetFrame.height - session.imageHeight - anchorTop,
+  );
+  const offsetXPx = Math.round(
+    clampNumber(session.previewLeft - targetFrame.left, 0, maxOffsetX),
+  );
+  const offsetYPx = Math.round(
+    clampNumber(session.previewTop - anchorTop, 0, maxOffsetY),
+  );
+  const align = alignForOffsetX(offsetXPx, maxOffsetX);
+  const nextAttrs = {
+    ...node.attrs,
+    placement: "float",
+    offsetXPx,
+    offsetYPx,
+    align,
+  };
+
+  let tr =
+    insertPos === session.pos
+      ? state.tr.setNodeMarkup(session.pos, undefined, nextAttrs)
+      : (() => {
+          let nextTr = state.tr.delete(session.pos, session.pos + node.nodeSize);
+          const mappedInsertPos = nextTr.mapping.map(insertPos, -1);
+          nextTr = nextTr.insert(mappedInsertPos, node.type.create(nextAttrs));
+          return nextTr.setSelection(NodeSelection.create(nextTr.doc, mappedInsertPos));
+        })();
+
+  if (insertPos === session.pos) {
+    tr = tr.setSelection(NodeSelection.create(tr.doc, session.pos));
+  }
+  return options?.scrollIntoView === false ? tr : tr.scrollIntoView();
+}
+
+function buildPreviewEditorState(
+  state: EditorState,
+  session: MoveSession,
+): EditorState {
+  const tr = buildImageMoveTransaction(state, session, { scrollIntoView: false });
+  return tr ? state.apply(tr) : state;
+}
+
 export function App() {
   const options = useMemo(() => {
     const defaults = defaultPremirrorOptions();
@@ -790,15 +882,20 @@ export function App() {
   const moveSessionRef = useRef<MoveSession | null>(null);
   const viewportWrapRef = useRef<HTMLDivElement | null>(null);
 
+  const displayEditorState = useMemo(
+    () => (moveSession ? buildPreviewEditorState(editorState, moveSession) : editorState),
+    [editorState, moveSession],
+  );
+
   const { layout, diagnostics } = usePremirrorEngine({
-    editorState,
+    editorState: displayEditorState,
     runtime,
     layoutInput,
   });
 
   const contentFrameWidth = layoutInput.page.widthPx - layoutInput.margins.leftPx - layoutInput.margins.rightPx;
 
-  const projection = useProjectedSelection(editorState, layout, pageLayoutMode);
+  const projection = useProjectedSelection(displayEditorState, layout, pageLayoutMode);
   const frameBoxes = useMemo(() => collectFrameBoxes(layout, pageLayoutMode), [layout, pageLayoutMode]);
   const fragmentAnchors = useMemo(
     () => collectFragmentAnchors(layout, pageLayoutMode),
@@ -806,25 +903,26 @@ export function App() {
   );
   const imageBoxes = useMemo(() => collectImageBoxes(layout, pageLayoutMode), [layout, pageLayoutMode]);
   const selectedImagePos = useMemo(() => {
-    const selection = editorState.selection;
+    const selection = displayEditorState.selection;
     return selection instanceof NodeSelection && selection.node.type.name === "image"
       ? selection.from
       : null;
-  }, [editorState.selection]);
+  }, [displayEditorState.selection]);
+  const draggingImagePos = moveSession ? selectedImagePos : null;
   const fragmentDecorations = useMemo(
     () =>
       buildFragmentDecorations(
-        editorState.doc,
+        displayEditorState.doc,
         layout,
         pageLayoutMode,
         selectedImagePos,
-        moveSession,
+        draggingImagePos,
       ),
-    [editorState.doc, layout, moveSession, pageLayoutMode, selectedImagePos],
+    [displayEditorState.doc, draggingImagePos, layout, pageLayoutMode, selectedImagePos],
   );
   const selectedImage = useMemo(
-    () => getSelectedImageInfo(editorState, imageBoxes),
-    [editorState, imageBoxes],
+    () => getSelectedImageInfo(displayEditorState, imageBoxes),
+    [displayEditorState, imageBoxes],
   );
   const activeDropFrame = useMemo(() => {
     if (!moveSession) return null;
@@ -841,18 +939,19 @@ export function App() {
       activeDropFrame.height === selectedImage.frame.height;
     return sameFrame ? null : activeDropFrame;
   }, [activeDropFrame, moveSession, selectedImage]);
-  const liveSelectedRect = useMemo(() => {
+  const imageToolbarStyle = useMemo(() => {
     if (!selectedImage) return null;
-    if (!moveSession || moveSession.pos !== selectedImage.pos) {
-      return selectedImage.rect;
-    }
+    const framePadding = 24;
+    const centerX = selectedImage.rect.left + selectedImage.rect.width / 2;
+    const minCenter = selectedImage.frame.left + framePadding;
+    const maxCenter = selectedImage.frame.left + selectedImage.frame.width - framePadding;
     return {
-      left: moveSession.previewLeft,
-      top: moveSession.previewTop,
-      width: moveSession.imageWidth,
-      height: moveSession.imageHeight,
+      left: clampNumber(centerX, minCenter, maxCenter),
+      top: Math.max(selectedImage.frame.top, selectedImage.rect.top - 56),
+      maxWidth: Math.max(320, selectedImage.frame.width - 16),
+      transform: "translateX(-50%)",
     };
-  }, [moveSession, selectedImage]);
+  }, [selectedImage]);
 
   useEffect(() => {
     moveSessionRef.current = moveSession;
@@ -904,83 +1003,9 @@ export function App() {
 
   const commitImageMove = useCallback(
     (session: MoveSession) => {
-      const centerX = session.previewLeft + session.imageWidth / 2;
-      const centerY = session.previewTop + session.imageHeight / 2;
-      const targetFrame = findFrameForPoint(centerX, centerY, frameBoxes);
-      if (!targetFrame) {
-        updateImageAttrsAtPos(session.pos, {
-          placement: "float",
-        });
-        return;
-      }
-
-      applyTransaction((state) => {
-        const node = state.doc.nodeAt(session.pos);
-        if (!node || node.type.name !== "image") return null;
-
-        const frameAnchors = fragmentAnchors
-          .filter(
-            (anchor) =>
-              anchor.pageIndex === targetFrame.pageIndex &&
-              anchor.frameIndex === targetFrame.frameIndex &&
-              anchor.pos !== session.pos,
-          )
-          .sort((a, b) => a.top - b.top);
-
-        const precedingAnchor =
-          [...frameAnchors]
-            .reverse()
-            .find((anchor) => anchor.top + (anchor.bottom - anchor.top) / 2 <= centerY) ?? null;
-
-        let insertPos = session.pos;
-        let anchorTop = targetFrame.top;
-
-        if (precedingAnchor) {
-          const precedingNode = state.doc.nodeAt(precedingAnchor.pos);
-          insertPos = precedingAnchor.pos + (precedingNode?.nodeSize ?? 0);
-          anchorTop = precedingAnchor.bottom;
-        } else if (frameAnchors[0]) {
-          insertPos = frameAnchors[0].pos;
-          anchorTop = targetFrame.top;
-        } else {
-          insertPos = Math.max(1, state.doc.content.size);
-          anchorTop = targetFrame.top;
-        }
-
-        const maxOffsetX = Math.max(0, targetFrame.width - session.imageWidth);
-        const maxOffsetY = Math.max(
-          0,
-          targetFrame.top + targetFrame.height - session.imageHeight - anchorTop,
-        );
-        const offsetXPx = Math.round(
-          clampNumber(session.previewLeft - targetFrame.left, 0, maxOffsetX),
-        );
-        const offsetYPx = Math.round(
-          clampNumber(session.previewTop - anchorTop, 0, maxOffsetY),
-        );
-        const align = alignForOffsetX(offsetXPx, maxOffsetX);
-        const nextAttrs = {
-          ...node.attrs,
-          placement: "float",
-          offsetXPx,
-          offsetYPx,
-          align,
-        };
-
-        if (insertPos === session.pos) {
-          let tr = state.tr.setNodeMarkup(session.pos, undefined, nextAttrs);
-          tr = tr.setSelection(NodeSelection.create(tr.doc, session.pos)).scrollIntoView();
-          return tr;
-        }
-
-        let tr = state.tr.delete(session.pos, session.pos + node.nodeSize);
-        const mappedInsertPos = tr.mapping.map(insertPos, -1);
-        tr = tr.insert(mappedInsertPos, node.type.create(nextAttrs));
-        tr = tr.setSelection(NodeSelection.create(tr.doc, mappedInsertPos)).scrollIntoView();
-        return tr;
-      });
+      applyTransaction((state) => buildImageMoveTransaction(state, session));
     },
-    [applyTransaction, fragmentAnchors, frameBoxes, updateImageAttrsAtPos],
+    [applyTransaction],
   );
 
   useEffect(() => {
@@ -1326,11 +1351,13 @@ export function App() {
         imageHeight: selectedImage.rect.height,
         previewLeft: selectedImage.rect.left,
         previewTop: selectedImage.rect.top,
+        baseFrameBoxes: frameBoxes,
+        baseFragmentAnchors: fragmentAnchors,
       };
       moveSessionRef.current = nextSession;
       setMoveSession(nextSession);
     },
-    [selectedImage],
+    [fragmentAnchors, frameBoxes, selectedImage],
   );
 
   const onEditorPasteCapture = useCallback(
@@ -1448,7 +1475,7 @@ export function App() {
               pageLayoutMode={pageLayoutMode}
               editorLayer={
                 <ProseMirror
-                  state={editorState}
+                  state={displayEditorState}
                   dispatchTransaction={dispatch}
                   decorations={() => fragmentDecorations}
                 >
@@ -1474,20 +1501,17 @@ export function App() {
                   aria-label="Move image"
                   className={`image-drag-surface ${moveSession ? "is-dragging" : ""}`}
                   style={{
-                    left: liveSelectedRect?.left ?? selectedImage.rect.left,
-                    top: liveSelectedRect?.top ?? selectedImage.rect.top,
-                    width: liveSelectedRect?.width ?? selectedImage.rect.width,
-                    height: liveSelectedRect?.height ?? selectedImage.rect.height,
+                    left: selectedImage.rect.left,
+                    top: selectedImage.rect.top,
+                    width: selectedImage.rect.width,
+                    height: selectedImage.rect.height,
                   }}
                   onPointerDown={startImageMove}
                 />
                 {!moveSession ? (
                   <div
                     className="image-toolbar"
-                    style={{
-                      left: selectedImage.rect.left,
-                      top: Math.max(0, selectedImage.rect.top - 48),
-                    }}
+                    style={imageToolbarStyle ?? undefined}
                   >
                   <div className="image-toolbar-group">
                     <button
