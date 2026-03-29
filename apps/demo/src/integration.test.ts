@@ -89,4 +89,52 @@ describe("demo integration", () => {
     if (!textFragment) return;
     expect(textFragment.lines.some((line) => (line.runs[0]?.x ?? 0) > 0)).toBe(true);
   });
+
+  it("can produce multiple lanes around a centered floating image", async () => {
+    const options = defaultPremirrorOptions({
+      policies: {
+        slotSelectionPolicy: "multi_slot_fill",
+      },
+    });
+    const runtime = createPremirror(options);
+    const compose = await import("@premirror/composer");
+
+    const state = EditorState.create({
+      schema: demoSchema,
+      doc: demoSchema.node("doc", null, [
+        demoSchema.node("image", {
+          src: "https://example.com/lesson.svg",
+          alt: "Centered floating lesson image",
+          widthPx: 220,
+          heightPx: 160,
+          align: "center",
+          placement: "float",
+          offsetXPx: 202,
+          offsetYPx: 0,
+        }),
+        demoSchema.node("paragraph", null, [
+          demoSchema.text(
+            Array.from({ length: 120 }, () => "Premirror can fill left and right lanes").join(" "),
+          ),
+        ]),
+      ]),
+      plugins: runtime.plugins,
+    });
+
+    const snapshot = runtime.toSnapshot(state);
+    const measured = runtime.measureSnapshot(snapshot);
+    const layout = compose.composeLayout(
+      measured,
+      null,
+      createLayoutInputFromOptions(options),
+    );
+
+    const textFragment = layout.pages[0]?.frames[0]?.fragments.find((fragment) => fragment.kind === "text");
+    expect(textFragment).toBeDefined();
+    if (!textFragment) return;
+    const sameBandXs = new Set(
+      textFragment.lines.filter((line) => line.y < 160).map((line) => line.runs[0]?.x ?? 0),
+    );
+    expect(sameBandXs.size).toBeGreaterThan(1);
+  });
 });

@@ -271,6 +271,12 @@ type LineDraft = {
   pmTo: number;
 };
 
+type FlowSlot = {
+  x: number;
+  width: number;
+  y: number;
+};
+
 function pushPlacedSegment(
   run: StyledRun,
   measured: MeasuredDocumentSnapshot["measuredRuns"],
@@ -727,21 +733,82 @@ export function composeLayout(
 
   const blocks = snapshot.blocks;
 
-  const slotForLineAtY = (yInFrame: number) => {
+  const flowSlotsForBand = (yInFrame: number): FlowSlot[] => {
     const bandTop = frame.y + yInFrame;
     const bandBottom = bandTop + lineHeight;
-    return usableSlotForBand(
+    const slots = usableSlotsForBand(
       frame.width,
       bandTop,
       bandBottom,
       activeObstacles,
       policies.minSlotWidthPx,
-      policies.slotSelectionPolicy,
     );
+    if (slots.length === 0) {
+      return [{ x: 0, width: frame.width, y: yInFrame }];
+    }
+    if (policies.slotSelectionPolicy === "multi_slot_fill") {
+      return slots.map((slot) => ({ ...slot, y: yInFrame }));
+    }
+    return [
+      {
+        ...usableSlotForBand(
+          frame.width,
+          bandTop,
+          bandBottom,
+          activeObstacles,
+          policies.minSlotWidthPx,
+          policies.slotSelectionPolicy,
+        ),
+        y: yInFrame,
+      },
+    ];
   };
 
-  const contentWidthForLine = (yInFrame: number): number => {
-    return slotForLineAtY(yInFrame).width;
+  const collectFlowSlots = (startY: number): FlowSlot[] => {
+    const slots: FlowSlot[] = [];
+    for (let y = startY; y < frame.height; y += lineHeight) {
+      slots.push(...flowSlotsForBand(y));
+    }
+    return slots;
+  };
+
+  const rowsUsedBySlots = (slots: FlowSlot[]): number => {
+    if (slots.length === 0) return 0;
+    let rows = 0;
+    let previousY: number | null = null;
+    for (const slot of slots) {
+      if (previousY !== slot.y) {
+        rows += 1;
+        previousY = slot.y;
+      }
+    }
+    return rows;
+  };
+
+  const normalizeFitToRowBoundary = (
+    fit: number,
+    remaining: number,
+    slots: FlowSlot[],
+  ): number => {
+    let nextFit = Math.min(fit, remaining, slots.length);
+    if (nextFit <= 0) return 0;
+
+    while (
+      nextFit < remaining &&
+      nextFit < slots.length &&
+      slots[nextFit - 1]?.y === slots[nextFit]?.y
+    ) {
+      nextFit -= 1;
+    }
+
+    if (nextFit === 0 && slots.length > 0) {
+      const firstRowY = slots[0]!.y;
+      let idx = 0;
+      while (idx < slots.length && slots[idx]!.y === firstRowY) idx += 1;
+      nextFit = Math.min(idx, remaining);
+    }
+
+    return nextFit;
   };
 
   const estimateBlockHeight = (b: BlockSnapshot, yInFrame: number): number => {
@@ -751,10 +818,13 @@ export function composeLayout(
       }
       return fittedImageBlockSize(b, frame.width, frame.height).height;
     }
-    const d = breakBlockIntoLineDrafts(b, snapshot, (lineIndex) =>
-      contentWidthForLine(yInFrame + lineIndex * lineHeight),
+    const flowSlots = collectFlowSlots(yInFrame);
+    const d = breakBlockIntoLineDrafts(
+      b,
+      snapshot,
+      (lineIndex) => flowSlots[lineIndex]?.width ?? frame.width,
     );
-    return d.length * lineHeight;
+    return rowsUsedBySlots(flowSlots.slice(0, d.length)) * lineHeight;
   };
 
   for (let bi = 0; bi < blocks.length; bi++) {
@@ -869,8 +939,11 @@ export function composeLayout(
       }
     }
 
-    const drafts = breakBlockIntoLineDrafts(block, snapshot, (lineIndex) =>
-      contentWidthForLine(currentY + lineIndex * lineHeight),
+    let availableFlowSlots = collectFlowSlots(currentY);
+    const drafts = breakBlockIntoLineDrafts(
+      block,
+      snapshot,
+      (lineIndex) => availableFlowSlots[lineIndex]?.width ?? frame.width,
     );
     if (drafts.length === 0) continue;
 
@@ -878,8 +951,9 @@ export function composeLayout(
     let fragmentIndex = 0;
 
     while (lineCursor < drafts.length) {
+      availableFlowSlots = collectFlowSlots(currentY);
       const remaining = drafts.length - lineCursor;
-      const maxLines = Math.max(0, Math.floor((frame.height - currentY) / lineHeight));
+      const maxLines = availableFlowSlots.length;
       const { fit, reason } = linesThatFitFirstFragment(
         remaining,
         Math.max(maxLines, 0),
@@ -903,15 +977,15 @@ export function composeLayout(
           breakReasonForSplit = "frame_overflow";
         }
       }
+      useFit = normalizeFitToRowBoundary(useFit, remaining, availableFlowSlots);
 
       const chunk = drafts.slice(lineCursor, lineCursor + useFit);
       const assigned: LineBox[] = chunk.map((d, li) => {
-        const y = currentY + li * lineHeight;
-        const s = slotForLineAtY(y);
+        const slot = availableFlowSlots[li] ?? { x: 0, width: frame.width, y: currentY + li * lineHeight };
         return {
-          y,
+          y: slot.y,
           height: lineHeight,
-          runs: offsetRunsForSlot(d.runs, s.x),
+          runs: offsetRunsForSlot(d.runs, slot.x),
           pmRange: { from: d.pmFrom, to: d.pmTo },
         };
       });
@@ -944,7 +1018,8 @@ export function composeLayout(
       }
 
       currentFragments.push(frag);
-      currentY += useFit * lineHeight;
+      const usedRows = rowsUsedBySlots(availableFlowSlots.slice(0, useFit));
+      currentY += usedRows * lineHeight;
       lineCursor += useFit;
       fragmentIndex += 1;
 

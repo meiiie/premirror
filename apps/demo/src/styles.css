@@ -258,6 +258,16 @@ html, body {
   cursor: grabbing;
 }
 
+.image-drag-preview {
+  position: absolute;
+  z-index: 22;
+  pointer-events: none;
+  border-radius: 10px;
+  border: 2px dashed rgba(37, 99, 235, 0.75);
+  background: rgba(219, 234, 254, 0.18);
+  box-shadow: 0 12px 30px rgba(37, 99, 235, 0.15);
+}
+
 .image-toolbar {
   position: absolute;
   z-index: 20;

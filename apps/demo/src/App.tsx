@@ -192,15 +192,14 @@ type ResizeSession = {
 
 type MoveSession = {
   pos: number;
+  clientX: number;
+  clientY: number;
   pointerOffsetX: number;
   pointerOffsetY: number;
-  frameLeft: number;
-  frameTop: number;
-  frameWidth: number;
-  frameHeight: number;
-  anchorTop: number;
   imageWidth: number;
   imageHeight: number;
+  previewLeft: number;
+  previewTop: number;
 };
 
 type ParagraphBox = {
@@ -219,10 +218,29 @@ type ImageBox = {
   top: number;
   width: number;
   height: number;
+  pageIndex: number;
+  frameIndex: number;
   frameLeft: number;
   frameTop: number;
   frameWidth: number;
   frameHeight: number;
+};
+
+type FrameBox = {
+  pageIndex: number;
+  frameIndex: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type FragmentAnchor = {
+  pos: number;
+  pageIndex: number;
+  frameIndex: number;
+  top: number;
+  bottom: number;
 };
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -308,6 +326,124 @@ function paragraphRangeAtPos(
   return null;
 }
 
+function blockPosFromBlockId(blockId: string): number | null {
+  const match = /^block-(\d+)$/.exec(blockId);
+  if (!match) return null;
+  return Number.parseInt(match[1]!, 10);
+}
+
+function collectFrameBoxes(
+  layout: LayoutOutput,
+  pageLayoutMode: PageLayoutMode,
+): FrameBox[] {
+  const frameBoxes: FrameBox[] = [];
+  const geometry = getPageLayoutGeometry(layout, pageLayoutMode);
+  layout.pages.forEach((page, pageIdx) => {
+    const pagePlacement = geometry.pagePlacements[pageIdx] ?? { left: 0, top: 0 };
+    page.frames.forEach((frame, frameIdx) => {
+      frameBoxes.push({
+        pageIndex: pageIdx,
+        frameIndex: frameIdx,
+        left: pagePlacement.left + frame.bounds.x,
+        top: pagePlacement.top + frame.bounds.y,
+        width: frame.bounds.width,
+        height: frame.bounds.height,
+      });
+    });
+  });
+  return frameBoxes;
+}
+
+function collectFragmentAnchors(
+  layout: LayoutOutput,
+  pageLayoutMode: PageLayoutMode,
+): FragmentAnchor[] {
+  const anchors: FragmentAnchor[] = [];
+  const geometry = getPageLayoutGeometry(layout, pageLayoutMode);
+  layout.pages.forEach((page, pageIdx) => {
+    const pagePlacement = geometry.pagePlacements[pageIdx] ?? { left: 0, top: 0 };
+    page.frames.forEach((frame, frameIdx) => {
+      frame.fragments.forEach((fragment) => {
+        const pos = blockPosFromBlockId(fragment.blockId);
+        if (pos === null) return;
+        if (fragment.kind === "image" && fragment.bounds) {
+          anchors.push({
+            pos,
+            pageIndex: pageIdx,
+            frameIndex: frameIdx,
+            top: pagePlacement.top + frame.bounds.y + fragment.bounds.y,
+            bottom: pagePlacement.top + frame.bounds.y + fragment.bounds.y + fragment.bounds.height,
+          });
+          return;
+        }
+        if (fragment.lines.length === 0) return;
+        const top = Math.min(...fragment.lines.map((line) => pagePlacement.top + frame.bounds.y + line.y));
+        const bottom = Math.max(
+          ...fragment.lines.map((line) => pagePlacement.top + frame.bounds.y + line.y + line.height),
+        );
+        anchors.push({
+          pos,
+          pageIndex: pageIdx,
+          frameIndex: frameIdx,
+          top,
+          bottom,
+        });
+      });
+    });
+  });
+  return anchors;
+}
+
+function findFrameForPoint(
+  x: number,
+  y: number,
+  frames: FrameBox[],
+): FrameBox | null {
+  const containing = frames.find(
+    (frame) =>
+      x >= frame.left &&
+      x <= frame.left + frame.width &&
+      y >= frame.top &&
+      y <= frame.top + frame.height,
+  );
+  if (containing) return containing;
+  if (frames.length === 0) return null;
+  return frames.reduce((best, frame) => {
+    const bestCx = best.left + best.width / 2;
+    const bestCy = best.top + best.height / 2;
+    const frameCx = frame.left + frame.width / 2;
+    const frameCy = frame.top + frame.height / 2;
+    const bestDistance = (bestCx - x) ** 2 + (bestCy - y) ** 2;
+    const frameDistance = (frameCx - x) ** 2 + (frameCy - y) ** 2;
+    return frameDistance < bestDistance ? frame : best;
+  });
+}
+
+function alignForOffsetX(offsetXPx: number, maxOffsetX: number): ImageAlignment {
+  if (maxOffsetX <= 0) return "center";
+  const leftDistance = Math.abs(offsetXPx);
+  const centerDistance = Math.abs(offsetXPx - maxOffsetX / 2);
+  const rightDistance = Math.abs(offsetXPx - maxOffsetX);
+  if (leftDistance <= centerDistance && leftDistance <= rightDistance) return "left";
+  if (rightDistance <= centerDistance && rightDistance <= leftDistance) return "right";
+  return "center";
+}
+
+function pointerToViewportContentPoint(
+  clientX: number,
+  clientY: number,
+  container: HTMLDivElement | null,
+): { x: number; y: number } {
+  if (!container) {
+    return { x: clientX, y: clientY };
+  }
+  const rect = container.getBoundingClientRect();
+  return {
+    x: clientX - rect.left + container.scrollLeft,
+    y: clientY - rect.top + container.scrollTop,
+  };
+}
+
 function collectImageBoxes(
   layout: LayoutOutput,
   pageLayoutMode: PageLayoutMode,
@@ -316,7 +452,7 @@ function collectImageBoxes(
   const geometry = getPageLayoutGeometry(layout, pageLayoutMode);
   layout.pages.forEach((page, pageIdx) => {
     const pagePlacement = geometry.pagePlacements[pageIdx] ?? { left: 0, top: 0 };
-    for (const frame of page.frames) {
+    page.frames.forEach((frame, frameIdx) => {
       for (const fragment of frame.fragments) {
         if (fragment.kind !== "image" || !fragment.bounds) continue;
         imageBoxes.push({
@@ -326,13 +462,15 @@ function collectImageBoxes(
           top: pagePlacement.top + frame.bounds.y + fragment.bounds.y,
           width: fragment.bounds.width,
           height: fragment.bounds.height,
+          pageIndex: pageIdx,
+          frameIndex: frameIdx,
           frameLeft: pagePlacement.left + frame.bounds.x,
           frameTop: pagePlacement.top + frame.bounds.y,
           frameWidth: frame.bounds.width,
           frameHeight: frame.bounds.height,
         });
       }
-    }
+    });
   });
   return imageBoxes;
 }
@@ -547,6 +685,8 @@ export function App() {
   const [moveSession, setMoveSession] = useState<MoveSession | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const moveSessionRef = useRef<MoveSession | null>(null);
+  const viewportWrapRef = useRef<HTMLDivElement | null>(null);
 
   const { layout, diagnostics } = usePremirrorEngine({
     editorState,
@@ -557,6 +697,11 @@ export function App() {
   const contentFrameWidth = layoutInput.page.widthPx - layoutInput.margins.leftPx - layoutInput.margins.rightPx;
 
   const projection = useProjectedSelection(editorState, layout, pageLayoutMode);
+  const frameBoxes = useMemo(() => collectFrameBoxes(layout, pageLayoutMode), [layout, pageLayoutMode]);
+  const fragmentAnchors = useMemo(
+    () => collectFragmentAnchors(layout, pageLayoutMode),
+    [layout, pageLayoutMode],
+  );
   const imageBoxes = useMemo(() => collectImageBoxes(layout, pageLayoutMode), [layout, pageLayoutMode]);
   const fragmentDecorations = useMemo(
     () => buildFragmentDecorations(editorState.doc, layout, pageLayoutMode),
@@ -566,6 +711,10 @@ export function App() {
     () => getSelectedImageInfo(editorState, imageBoxes),
     [editorState, imageBoxes],
   );
+
+  useEffect(() => {
+    moveSessionRef.current = moveSession;
+  }, [moveSession]);
 
   const dispatch = useCallback((tr: Transaction) => {
     setEditorState((s) => s.apply(tr));
@@ -604,31 +753,164 @@ export function App() {
     [applyTransaction],
   );
 
+  const commitImageMove = useCallback(
+    (session: MoveSession) => {
+      const centerX = session.previewLeft + session.imageWidth / 2;
+      const centerY = session.previewTop + session.imageHeight / 2;
+      const targetFrame = findFrameForPoint(centerX, centerY, frameBoxes);
+      if (!targetFrame) {
+        updateImageAttrsAtPos(session.pos, {
+          placement: "float",
+        });
+        return;
+      }
+
+      applyTransaction((state) => {
+        const node = state.doc.nodeAt(session.pos);
+        if (!node || node.type.name !== "image") return null;
+
+        const frameAnchors = fragmentAnchors
+          .filter(
+            (anchor) =>
+              anchor.pageIndex === targetFrame.pageIndex &&
+              anchor.frameIndex === targetFrame.frameIndex &&
+              anchor.pos !== session.pos,
+          )
+          .sort((a, b) => a.top - b.top);
+
+        const precedingAnchor =
+          [...frameAnchors]
+            .reverse()
+            .find((anchor) => anchor.top + (anchor.bottom - anchor.top) / 2 <= centerY) ?? null;
+
+        let insertPos = session.pos;
+        let anchorTop = targetFrame.top;
+
+        if (precedingAnchor) {
+          const precedingNode = state.doc.nodeAt(precedingAnchor.pos);
+          insertPos = precedingAnchor.pos + (precedingNode?.nodeSize ?? 0);
+          anchorTop = precedingAnchor.bottom;
+        } else if (frameAnchors[0]) {
+          insertPos = frameAnchors[0].pos;
+          anchorTop = targetFrame.top;
+        } else {
+          insertPos = Math.max(1, state.doc.content.size);
+          anchorTop = targetFrame.top;
+        }
+
+        const maxOffsetX = Math.max(0, targetFrame.width - session.imageWidth);
+        const maxOffsetY = Math.max(
+          0,
+          targetFrame.top + targetFrame.height - session.imageHeight - anchorTop,
+        );
+        const offsetXPx = Math.round(
+          clampNumber(session.previewLeft - targetFrame.left, 0, maxOffsetX),
+        );
+        const offsetYPx = Math.round(
+          clampNumber(session.previewTop - anchorTop, 0, maxOffsetY),
+        );
+        const align = alignForOffsetX(offsetXPx, maxOffsetX);
+        const nextAttrs = {
+          ...node.attrs,
+          placement: "float",
+          offsetXPx,
+          offsetYPx,
+          align,
+        };
+
+        if (insertPos === session.pos) {
+          let tr = state.tr.setNodeMarkup(session.pos, undefined, nextAttrs);
+          tr = tr.setSelection(NodeSelection.create(tr.doc, session.pos)).scrollIntoView();
+          return tr;
+        }
+
+        let tr = state.tr.delete(session.pos, session.pos + node.nodeSize);
+        const mappedInsertPos = tr.mapping.map(insertPos, -1);
+        tr = tr.insert(mappedInsertPos, node.type.create(nextAttrs));
+        tr = tr.setSelection(NodeSelection.create(tr.doc, mappedInsertPos)).scrollIntoView();
+        return tr;
+      });
+    },
+    [applyTransaction, fragmentAnchors, frameBoxes, updateImageAttrsAtPos],
+  );
+
   useEffect(() => {
     if (!moveSession) return;
 
     const onPointerMove = (event: PointerEvent) => {
-      const nextX = clampNumber(
-        event.clientX - moveSession.pointerOffsetX - moveSession.frameLeft,
-        0,
-        Math.max(0, moveSession.frameWidth - moveSession.imageWidth),
+      const nextPoint = pointerToViewportContentPoint(
+        event.clientX,
+        event.clientY,
+        viewportWrapRef.current,
       );
-      const desiredTop = event.clientY - moveSession.pointerOffsetY;
-      const maxOffsetY = Math.max(
-        0,
-        moveSession.frameTop + moveSession.frameHeight - moveSession.imageHeight - moveSession.anchorTop,
+      setMoveSession((session) =>
+        !session
+          ? null
+          : (() => {
+              const nextSession = {
+                ...session,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                previewLeft: nextPoint.x - session.pointerOffsetX,
+                previewTop: nextPoint.y - session.pointerOffsetY,
+              };
+              moveSessionRef.current = nextSession;
+              return nextSession;
+            })(),
       );
-      const nextOffsetY = clampNumber(desiredTop - moveSession.anchorTop, 0, maxOffsetY);
-      updateImageAttrsAtPos(moveSession.pos, {
-        placement: "float",
-        offsetXPx: Math.round(nextX),
-        offsetYPx: Math.round(nextOffsetY),
-      });
     };
 
     const onPointerUp = () => {
+      const session = moveSessionRef.current;
+      if (session) {
+        commitImageMove(session);
+      }
+      window.setTimeout(() => {
+        const editor = document.querySelector(".ProseMirror");
+        if (editor instanceof HTMLElement) {
+          editor.focus();
+        }
+      }, 0);
+      moveSessionRef.current = null;
       setMoveSession(null);
     };
+
+    const scrollMargin = 96;
+    const scrollStep = 96;
+    const autoScrollInterval = window.setInterval(() => {
+      const session = moveSessionRef.current;
+      const container = viewportWrapRef.current;
+      if (!session || !container) return;
+      const rect = container.getBoundingClientRect();
+      let didScroll = false;
+      if (session.clientY > rect.bottom - scrollMargin) {
+        container.scrollTop += scrollStep;
+        didScroll = true;
+      } else if (session.clientY < rect.top + scrollMargin) {
+        container.scrollTop -= scrollStep;
+        didScroll = true;
+      }
+      if (didScroll) {
+        const nextPoint = pointerToViewportContentPoint(
+          session.clientX,
+          session.clientY,
+          container,
+        );
+        setMoveSession((current) =>
+          !current
+            ? null
+            : (() => {
+                const nextSession = {
+                  ...current,
+                  previewLeft: nextPoint.x - current.pointerOffsetX,
+                  previewTop: nextPoint.y - current.pointerOffsetY,
+                };
+                moveSessionRef.current = nextSession;
+                return nextSession;
+              })(),
+        );
+      }
+    }, 16);
 
     const previousCursor = document.body.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
@@ -641,10 +923,11 @@ export function App() {
     return () => {
       document.body.style.cursor = previousCursor;
       document.body.style.userSelect = previousUserSelect;
+      window.clearInterval(autoScrollInterval);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
     };
-  }, [moveSession, updateImageAttrsAtPos]);
+  }, [commitImageMove, moveSession]);
 
   useEffect(() => {
     if (!resizeSession) return;
@@ -747,14 +1030,17 @@ export function App() {
         0,
         selectedImage.frame.top + selectedImage.frame.height - selectedImage.rect.height - selectedImage.anchorTop,
       );
+      const offsetXPx = Math.round(
+        clampNumber(selectedImage.rect.left - selectedImage.frame.left, 0, maxX),
+      );
+      const offsetYPx = Math.round(
+        clampNumber(selectedImage.rect.top - selectedImage.anchorTop, 0, maxY),
+      );
       updateImageAttrsAtPos(selectedImage.pos, {
         placement: "float",
-        offsetXPx: Math.round(
-          clampNumber(selectedImage.rect.left - selectedImage.frame.left, 0, maxX),
-        ),
-        offsetYPx: Math.round(
-          clampNumber(selectedImage.rect.top - selectedImage.anchorTop, 0, maxY),
-        ),
+        offsetXPx,
+        offsetYPx,
+        align: alignForOffsetX(offsetXPx, maxX),
       });
     },
     [selectedImage, updateImageAttrsAtPos],
@@ -835,18 +1121,24 @@ export function App() {
       event.preventDefault();
       event.stopPropagation();
       if (!selectedImage) return;
-      setMoveSession({
+      const startPoint = pointerToViewportContentPoint(
+        event.clientX,
+        event.clientY,
+        viewportWrapRef.current,
+      );
+      const nextSession = {
         pos: selectedImage.pos,
-        pointerOffsetX: event.clientX - selectedImage.rect.left,
-        pointerOffsetY: event.clientY - selectedImage.rect.top,
-        frameLeft: selectedImage.frame.left,
-        frameTop: selectedImage.frame.top,
-        frameWidth: selectedImage.frame.width,
-        frameHeight: selectedImage.frame.height,
-        anchorTop: selectedImage.anchorTop,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        pointerOffsetX: startPoint.x - selectedImage.rect.left,
+        pointerOffsetY: startPoint.y - selectedImage.rect.top,
         imageWidth: selectedImage.rect.width,
         imageHeight: selectedImage.rect.height,
-      });
+        previewLeft: selectedImage.rect.left,
+        previewTop: selectedImage.rect.top,
+      };
+      moveSessionRef.current = nextSession;
+      setMoveSession(nextSession);
     },
     [selectedImage],
   );
@@ -935,7 +1227,7 @@ export function App() {
         </div>
       </div>
 
-      <div className="paged-viewport-wrap">
+      <div ref={viewportWrapRef} className="paged-viewport-wrap">
         <div className="paged-viewport-inner">
           <div className="premirror-stack">
             <PremirrorPageViewport
@@ -965,6 +1257,18 @@ export function App() {
                   }}
                   onPointerDown={startImageMove}
                 />
+                {moveSession ? (
+                  <div
+                    aria-hidden
+                    className="image-drag-preview"
+                    style={{
+                      left: moveSession.previewLeft,
+                      top: moveSession.previewTop,
+                      width: moveSession.imageWidth,
+                      height: moveSession.imageHeight,
+                    }}
+                  />
+                ) : null}
                 <div
                   className="image-toolbar"
                   style={{
@@ -1043,16 +1347,18 @@ export function App() {
                     </span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  aria-label="Resize image"
-                  className="image-resize-handle"
-                  style={{
-                    left: selectedImage.rect.left + selectedImage.rect.width - 8,
-                    top: selectedImage.rect.top + selectedImage.rect.height - 8,
-                  }}
-                  onPointerDown={startImageResize}
-                />
+                {!moveSession ? (
+                  <button
+                    type="button"
+                    aria-label="Resize image"
+                    className="image-resize-handle"
+                    style={{
+                      left: selectedImage.rect.left + selectedImage.rect.width - 8,
+                      top: selectedImage.rect.top + selectedImage.rect.height - 8,
+                    }}
+                    onPointerDown={startImageResize}
+                  />
+                ) : null}
                 <input
                   ref={fileInputRef}
                   className="image-file-input"
