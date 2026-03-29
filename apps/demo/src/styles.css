@@ -224,6 +224,7 @@ html, body {
 
 .premirror-fragment-paragraph {
   position: absolute;
+  z-index: 1;
   color: transparent;
   caret-color: #111827;
   overflow: hidden;
@@ -231,6 +232,7 @@ html, body {
 
 .premirror-image-block {
   position: absolute;
+  z-index: 2;
   display: block;
   object-fit: contain;
   border-radius: 10px;
@@ -242,6 +244,18 @@ html, body {
 .premirror-image-block.ProseMirror-selectednode {
   outline: 2px solid rgba(37, 99, 235, 0.65);
   outline-offset: 2px;
+}
+
+.image-drag-surface {
+  position: absolute;
+  z-index: 19;
+  cursor: grab;
+  border-radius: 10px;
+  background: transparent;
+}
+
+.image-drag-surface.is-dragging {
+  cursor: grabbing;
 }
 
 .image-toolbar {

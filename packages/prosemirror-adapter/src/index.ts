@@ -6,6 +6,7 @@ import { layoutNextLine, prepareWithSegments } from "@chenglou/pretext";
 import type {
   BlockSnapshot,
   ImageAlignment,
+  ImagePlacement,
   MeasuredDocumentSnapshot,
   MeasuredRun,
   PremirrorOptions,
@@ -154,8 +155,21 @@ function readPositiveNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function readNonNegativeNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return fallback;
+}
+
 function readImageAlignment(value: unknown): ImageAlignment {
   return value === "left" || value === "right" ? value : "center";
+}
+
+function readImagePlacement(value: unknown): ImagePlacement {
+  return value === "float" ? "float" : "block";
 }
 
 function collectRunsForBlock(
@@ -264,6 +278,9 @@ function pushImageBlock(
   const widthPx = readPositiveNumber(node.attrs.widthPx, DEFAULT_IMAGE_WIDTH_PX);
   const heightPx = readPositiveNumber(node.attrs.heightPx, DEFAULT_IMAGE_HEIGHT_PX);
   const align = readImageAlignment(node.attrs.align);
+  const placement = readImagePlacement(node.attrs.placement);
+  const offsetXPx = readNonNegativeNumber(node.attrs.offsetXPx, 0);
+  const offsetYPx = readNonNegativeNumber(node.attrs.offsetYPx, 0);
   blocks.push({
     id,
     type: "image",
@@ -271,6 +288,9 @@ function pushImageBlock(
       widthPx,
       heightPx,
       align,
+      placement,
+      offsetXPx,
+      offsetYPx,
       ...extraAttrs,
     }),
     runs: [],

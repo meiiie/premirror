@@ -9,6 +9,7 @@ import {
   createLayoutInputFromOptions,
   defaultPremirrorOptions,
   type ImageAlignment,
+  type ImagePlacement,
   type LayoutOutput,
 } from "@premirror/core";
 import { createPremirror } from "@premirror/prosemirror-adapter";
@@ -63,7 +64,10 @@ function buildInitialState(
           alt: `Lesson illustration ${i + 1}`,
           widthPx: 480,
           heightPx: 270,
-          align: "center",
+          align: i === 7 ? "left" : "center",
+          placement: i === 7 ? "float" : "block",
+          offsetXPx: 0,
+          offsetYPx: 0,
         }),
       );
     }
@@ -155,6 +159,9 @@ type DemoImageAttrs = {
   widthPx: number;
   heightPx: number;
   align: ImageAlignment;
+  placement: ImagePlacement;
+  offsetXPx: number;
+  offsetYPx: number;
 };
 
 type SelectedImageInfo = {
@@ -166,6 +173,13 @@ type SelectedImageInfo = {
     width: number;
     height: number;
   };
+  frame: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+  anchorTop: number;
 };
 
 type ResizeSession = {
@@ -174,6 +188,19 @@ type ResizeSession = {
   startWidth: number;
   aspectRatio: number;
   maxWidth: number;
+};
+
+type MoveSession = {
+  pos: number;
+  pointerOffsetX: number;
+  pointerOffsetY: number;
+  frameLeft: number;
+  frameTop: number;
+  frameWidth: number;
+  frameHeight: number;
+  anchorTop: number;
+  imageWidth: number;
+  imageHeight: number;
 };
 
 type ParagraphBox = {
@@ -192,6 +219,10 @@ type ImageBox = {
   top: number;
   width: number;
   height: number;
+  frameLeft: number;
+  frameTop: number;
+  frameWidth: number;
+  frameHeight: number;
 };
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -199,12 +230,19 @@ function clampNumber(value: number, min: number, max: number): number {
 }
 
 function readImageAttrs(node: ProseMirrorNode): DemoImageAttrs {
+  const widthPx = Number(node.attrs.widthPx ?? 480);
+  const heightPx = Number(node.attrs.heightPx ?? 270);
+  const offsetXPx = Number(node.attrs.offsetXPx ?? 0);
+  const offsetYPx = Number(node.attrs.offsetYPx ?? 0);
   return {
     src: String(node.attrs.src ?? ""),
     alt: String(node.attrs.alt ?? ""),
-    widthPx: Number(node.attrs.widthPx ?? 480),
-    heightPx: Number(node.attrs.heightPx ?? 270),
+    widthPx: Number.isFinite(widthPx) ? widthPx : 480,
+    heightPx: Number.isFinite(heightPx) ? heightPx : 270,
     align: (node.attrs.align === "left" || node.attrs.align === "right" ? node.attrs.align : "center") as ImageAlignment,
+    placement: (node.attrs.placement === "float" ? "float" : "block") as ImagePlacement,
+    offsetXPx: Number.isFinite(offsetXPx) ? Math.max(0, offsetXPx) : 0,
+    offsetYPx: Number.isFinite(offsetYPx) ? Math.max(0, offsetYPx) : 0,
   };
 }
 
@@ -270,6 +308,35 @@ function paragraphRangeAtPos(
   return null;
 }
 
+function collectImageBoxes(
+  layout: LayoutOutput,
+  pageLayoutMode: PageLayoutMode,
+): ImageBox[] {
+  const imageBoxes: ImageBox[] = [];
+  const geometry = getPageLayoutGeometry(layout, pageLayoutMode);
+  layout.pages.forEach((page, pageIdx) => {
+    const pagePlacement = geometry.pagePlacements[pageIdx] ?? { left: 0, top: 0 };
+    for (const frame of page.frames) {
+      for (const fragment of frame.fragments) {
+        if (fragment.kind !== "image" || !fragment.bounds) continue;
+        imageBoxes.push({
+          from: fragment.pmRange.from,
+          to: fragment.pmRange.to,
+          left: pagePlacement.left + frame.bounds.x + fragment.bounds.x,
+          top: pagePlacement.top + frame.bounds.y + fragment.bounds.y,
+          width: fragment.bounds.width,
+          height: fragment.bounds.height,
+          frameLeft: pagePlacement.left + frame.bounds.x,
+          frameTop: pagePlacement.top + frame.bounds.y,
+          frameWidth: frame.bounds.width,
+          frameHeight: frame.bounds.height,
+        });
+      }
+    }
+  });
+  return imageBoxes;
+}
+
 function buildFragmentDecorations(
   doc: ProseMirrorNode,
   layout: LayoutOutput,
@@ -277,7 +344,7 @@ function buildFragmentDecorations(
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const paragraphBoxes = new Map<string, ParagraphBox>();
-  const imageBoxes: ImageBox[] = [];
+  const imageBoxes = collectImageBoxes(layout, pageLayoutMode);
   const runPlacements: Array<{
     runFrom: number;
     runTo: number;
@@ -319,19 +386,7 @@ function buildFragmentDecorations(
     const pagePlacement = geometry.pagePlacements[pageIdx] ?? { left: 0, top: 0 };
     for (const frame of page.frames) {
       for (const fragment of frame.fragments) {
-        if (fragment.kind === "image") {
-          const bounds = fragment.bounds;
-          if (!bounds) continue;
-          imageBoxes.push({
-            from: fragment.pmRange.from,
-            to: fragment.pmRange.to,
-            left: pagePlacement.left + frame.bounds.x + bounds.x,
-            top: pagePlacement.top + frame.bounds.y + bounds.y,
-            width: bounds.width,
-            height: bounds.height,
-          });
-          continue;
-        }
+        if (fragment.kind === "image") continue;
         const fragmentParagraph = paragraphRangeFromBlockId(doc, fragment.blockId);
         for (const line of fragment.lines) {
           const lineTop = pagePlacement.top + frame.bounds.y + line.y;
@@ -440,23 +495,31 @@ function buildFragmentDecorations(
 
 function getSelectedImageInfo(
   editorState: EditorState,
-  projection: ReturnType<typeof useProjectedSelection>,
+  imageBoxes: ImageBox[],
 ): SelectedImageInfo | null {
   const selection = editorState.selection;
   if (!(selection instanceof NodeSelection) || selection.node.type.name !== "image") {
     return null;
   }
-  const rect = projection.rects[0];
-  if (!rect) return null;
+  const box = imageBoxes.find((image) => image.from === selection.from && image.to === selection.to);
+  if (!box) return null;
+  const attrs = readImageAttrs(selection.node);
   return {
     pos: selection.from,
-    attrs: readImageAttrs(selection.node),
+    attrs,
     rect: {
-      left: rect.x,
-      top: rect.y,
-      width: rect.width,
-      height: rect.height,
+      left: box.left,
+      top: box.top,
+      width: box.width,
+      height: box.height,
     },
+    frame: {
+      left: box.frameLeft,
+      top: box.frameTop,
+      width: box.frameWidth,
+      height: box.frameHeight,
+    },
+    anchorTop: box.top - (attrs.placement === "float" ? attrs.offsetYPx : 0),
   };
 }
 
@@ -465,6 +528,10 @@ export function App() {
     const defaults = defaultPremirrorOptions();
     return {
       ...defaults,
+      policies: {
+        ...defaults.policies,
+        slotSelectionPolicy: "multi_slot_fill" as const,
+      },
       typography: {
         ...defaults.typography,
         defaultFont: '"Helvetica Neue", Helvetica, Arial, sans-serif',
@@ -477,6 +544,7 @@ export function App() {
   const [editorState, setEditorState] = useState(() => buildInitialState(runtime));
   const [showDebug, setShowDebug] = useState(false);
   const [pageLayoutMode, setPageLayoutMode] = useState<PageLayoutMode>("spread");
+  const [moveSession, setMoveSession] = useState<MoveSession | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -489,13 +557,14 @@ export function App() {
   const contentFrameWidth = layoutInput.page.widthPx - layoutInput.margins.leftPx - layoutInput.margins.rightPx;
 
   const projection = useProjectedSelection(editorState, layout, pageLayoutMode);
+  const imageBoxes = useMemo(() => collectImageBoxes(layout, pageLayoutMode), [layout, pageLayoutMode]);
   const fragmentDecorations = useMemo(
     () => buildFragmentDecorations(editorState.doc, layout, pageLayoutMode),
     [editorState.doc, layout, pageLayoutMode],
   );
   const selectedImage = useMemo(
-    () => getSelectedImageInfo(editorState, projection),
-    [editorState, projection],
+    () => getSelectedImageInfo(editorState, imageBoxes),
+    [editorState, imageBoxes],
   );
 
   const dispatch = useCallback((tr: Transaction) => {
@@ -534,6 +603,48 @@ export function App() {
     },
     [applyTransaction],
   );
+
+  useEffect(() => {
+    if (!moveSession) return;
+
+    const onPointerMove = (event: PointerEvent) => {
+      const nextX = clampNumber(
+        event.clientX - moveSession.pointerOffsetX - moveSession.frameLeft,
+        0,
+        Math.max(0, moveSession.frameWidth - moveSession.imageWidth),
+      );
+      const desiredTop = event.clientY - moveSession.pointerOffsetY;
+      const maxOffsetY = Math.max(
+        0,
+        moveSession.frameTop + moveSession.frameHeight - moveSession.imageHeight - moveSession.anchorTop,
+      );
+      const nextOffsetY = clampNumber(desiredTop - moveSession.anchorTop, 0, maxOffsetY);
+      updateImageAttrsAtPos(moveSession.pos, {
+        placement: "float",
+        offsetXPx: Math.round(nextX),
+        offsetYPx: Math.round(nextOffsetY),
+      });
+    };
+
+    const onPointerUp = () => {
+      setMoveSession(null);
+    };
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "grabbing";
+    document.body.style.userSelect = "none";
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp, { once: true });
+
+    return () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [moveSession, updateImageAttrsAtPos]);
 
   useEffect(() => {
     if (!resizeSession) return;
@@ -605,6 +716,9 @@ export function App() {
         widthPx: 480,
         heightPx: 270,
         align: "center",
+        placement: "block",
+        offsetXPx: 0,
+        offsetYPx: 0,
       });
       if (dispatchTransaction) {
         dispatchTransaction(state.tr.insert(insertPos, node).scrollIntoView());
@@ -617,9 +731,48 @@ export function App() {
     event.preventDefault();
   }, []);
 
+  const setSelectedImagePlacement = useCallback(
+    (placement: ImagePlacement) => {
+      if (!selectedImage) return;
+      if (placement === "block") {
+        updateImageAttrsAtPos(selectedImage.pos, {
+          placement: "block",
+          offsetXPx: 0,
+          offsetYPx: 0,
+        });
+        return;
+      }
+      const maxX = Math.max(0, selectedImage.frame.width - selectedImage.rect.width);
+      const maxY = Math.max(
+        0,
+        selectedImage.frame.top + selectedImage.frame.height - selectedImage.rect.height - selectedImage.anchorTop,
+      );
+      updateImageAttrsAtPos(selectedImage.pos, {
+        placement: "float",
+        offsetXPx: Math.round(
+          clampNumber(selectedImage.rect.left - selectedImage.frame.left, 0, maxX),
+        ),
+        offsetYPx: Math.round(
+          clampNumber(selectedImage.rect.top - selectedImage.anchorTop, 0, maxY),
+        ),
+      });
+    },
+    [selectedImage, updateImageAttrsAtPos],
+  );
+
   const setSelectedImageAlign = useCallback(
     (align: ImageAlignment) => {
       if (!selectedImage) return;
+      if (selectedImage.attrs.placement === "float") {
+        const maxX = Math.max(0, selectedImage.frame.width - selectedImage.rect.width);
+        const offsetXPx =
+          align === "left" ? 0 : align === "right" ? maxX : Math.round(maxX / 2);
+        updateImageAttrsAtPos(selectedImage.pos, {
+          align,
+          offsetXPx,
+        });
+        return;
+      }
       updateImageAttrsAtPos(selectedImage.pos, { align });
     },
     [selectedImage, updateImageAttrsAtPos],
@@ -631,9 +784,16 @@ export function App() {
       const aspectRatio = selectedImage.attrs.widthPx / Math.max(1, selectedImage.attrs.heightPx);
       const nextWidth = clampNumber(widthPx, MIN_IMAGE_WIDTH_PX, contentFrameWidth);
       const nextHeight = Math.max(MIN_IMAGE_HEIGHT_PX, Math.round(nextWidth / Math.max(0.1, aspectRatio)));
+      const maxOffsetX = Math.max(0, selectedImage.frame.width - nextWidth);
+      const maxOffsetY = Math.max(
+        0,
+        selectedImage.frame.top + selectedImage.frame.height - nextHeight - selectedImage.anchorTop,
+      );
       updateImageAttrsAtPos(selectedImage.pos, {
         widthPx: nextWidth,
         heightPx: nextHeight,
+        offsetXPx: Math.round(clampNumber(selectedImage.attrs.offsetXPx, 0, maxOffsetX)),
+        offsetYPx: Math.round(clampNumber(selectedImage.attrs.offsetYPx, 0, maxOffsetY)),
       });
     },
     [contentFrameWidth, selectedImage, updateImageAttrsAtPos],
@@ -652,15 +812,43 @@ export function App() {
       const aspectRatio = measured.width / Math.max(1, measured.height);
       const nextWidth = clampNumber(measured.width, MIN_IMAGE_WIDTH_PX, contentFrameWidth);
       const nextHeight = Math.max(MIN_IMAGE_HEIGHT_PX, Math.round(nextWidth / Math.max(0.1, aspectRatio)));
+      const maxOffsetX = Math.max(0, selectedImage.frame.width - nextWidth);
+      const maxOffsetY = Math.max(
+        0,
+        selectedImage.frame.top + selectedImage.frame.height - nextHeight - selectedImage.anchorTop,
+      );
       updateImageAttrsAtPos(selectedImage.pos, {
         src: dataUrl,
         alt: file.name,
         widthPx: nextWidth,
         heightPx: nextHeight,
+        offsetXPx: Math.round(clampNumber(selectedImage.attrs.offsetXPx, 0, maxOffsetX)),
+        offsetYPx: Math.round(clampNumber(selectedImage.attrs.offsetYPx, 0, maxOffsetY)),
       });
       event.target.value = "";
     },
     [contentFrameWidth, selectedImage, updateImageAttrsAtPos],
+  );
+
+  const startImageMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!selectedImage) return;
+      setMoveSession({
+        pos: selectedImage.pos,
+        pointerOffsetX: event.clientX - selectedImage.rect.left,
+        pointerOffsetY: event.clientY - selectedImage.rect.top,
+        frameLeft: selectedImage.frame.left,
+        frameTop: selectedImage.frame.top,
+        frameWidth: selectedImage.frame.width,
+        frameHeight: selectedImage.frame.height,
+        anchorTop: selectedImage.anchorTop,
+        imageWidth: selectedImage.rect.width,
+        imageHeight: selectedImage.rect.height,
+      });
+    },
+    [selectedImage],
   );
 
   const startImageResize = useCallback(
@@ -767,12 +955,41 @@ export function App() {
             {selectedImage ? (
               <>
                 <div
+                  aria-label="Move image"
+                  className={`image-drag-surface ${moveSession ? "is-dragging" : ""}`}
+                  style={{
+                    left: selectedImage.rect.left,
+                    top: selectedImage.rect.top,
+                    width: selectedImage.rect.width,
+                    height: selectedImage.rect.height,
+                  }}
+                  onPointerDown={startImageMove}
+                />
+                <div
                   className="image-toolbar"
                   style={{
                     left: selectedImage.rect.left,
                     top: Math.max(0, selectedImage.rect.top - 48),
                   }}
                 >
+                  <div className="image-toolbar-group">
+                    <button
+                      type="button"
+                      className={`image-toolbar-btn ${selectedImage.attrs.placement === "block" ? "is-active" : ""}`}
+                      onPointerDown={preventToolbarFocus}
+                      onClick={() => setSelectedImagePlacement("block")}
+                    >
+                      In flow
+                    </button>
+                    <button
+                      type="button"
+                      className={`image-toolbar-btn ${selectedImage.attrs.placement === "float" ? "is-active" : ""}`}
+                      onPointerDown={preventToolbarFocus}
+                      onClick={() => setSelectedImagePlacement("float")}
+                    >
+                      Float
+                    </button>
+                  </div>
                   <div className="image-toolbar-group">
                     <button
                       type="button"
@@ -788,7 +1005,7 @@ export function App() {
                       onPointerDown={preventToolbarFocus}
                       onClick={() => setSelectedImageAlign("center")}
                     >
-                      Center
+                      Mid
                     </button>
                     <button
                       type="button"
@@ -822,7 +1039,7 @@ export function App() {
                       Replace
                     </button>
                     <span className="image-toolbar-meta">
-                      {Math.round(selectedImage.attrs.widthPx)}×{Math.round(selectedImage.attrs.heightPx)}
+                      {selectedImage.attrs.placement === "float" ? "wrap" : "block"} · {Math.round(selectedImage.attrs.widthPx)}×{Math.round(selectedImage.attrs.heightPx)}
                     </span>
                   </div>
                 </div>

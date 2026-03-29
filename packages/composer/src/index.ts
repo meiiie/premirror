@@ -7,6 +7,7 @@ import type {
   ComposeMetrics,
   FrameLayout,
   ImageAlignment,
+  ImagePlacement,
   Interval,
   LayoutInput,
   LayoutOutput,
@@ -61,7 +62,6 @@ type ResolvedPolicies = {
 
 function resolvePolicies(input: LayoutInput): ResolvedPolicies {
   const p = input.policies;
-  // M1: `multi_slot_fill` is contract-compatible but uses the same leftmost slot as `single_slot_flow`.
   return {
     widowLinesMin: p.widowLinesMin ?? DEFAULT_LAYOUT_POLICIES.widowLinesMin ?? 2,
     orphanLinesMin: p.orphanLinesMin ?? DEFAULT_LAYOUT_POLICIES.orphanLinesMin ?? 2,
@@ -80,8 +80,25 @@ function readPositiveNumber(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function readNonNegativeNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return fallback;
+}
+
 function readImageAlignment(value: unknown): ImageAlignment {
   return value === "left" || value === "right" ? value : "center";
+}
+
+function readImagePlacement(value: unknown): ImagePlacement {
+  return value === "float" ? "float" : "block";
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function fittedImageBlockSize(
@@ -168,7 +185,7 @@ function isWordChar(ch: string | undefined): boolean {
 }
 
 // -----------------------------------------------------------------------------
-// Geometry: frame + obstacles (M1 single-slot flow)
+// Geometry: frame + obstacles
 // -----------------------------------------------------------------------------
 
 function mergeIntervals(intervals: Interval[]): Interval[] {
@@ -192,28 +209,47 @@ function mergeIntervals(intervals: Interval[]): Interval[] {
  * Picks the leftmost usable horizontal slot for `single_slot_flow`.
  * If carving yields no segment ≥ minSlotWidthPx, returns full frame width at x=0 (no-op-safe).
  */
-function usableSlotForBand(
+function usableSlotsForBand(
   frameWidth: number,
   lineTop: number,
   lineBottom: number,
   obstacles: BandObstacle[] | undefined,
   minSlotWidthPx: number,
-): { x: number; width: number } {
+): Array<{ x: number; width: number }> {
   const blocked: Interval[] = [];
   for (const o of obstacles ?? []) {
     if (o.yEnd <= lineTop || o.yStart >= lineBottom) continue;
     blocked.push(...o.intervalsForBand(lineTop, lineBottom));
   }
   const merged = mergeIntervals(blocked);
+  const slots: Array<{ x: number; width: number }> = [];
   let cursor = 0;
   for (const b of merged) {
     const gapW = b.start - cursor;
-    if (gapW >= minSlotWidthPx) return { x: cursor, width: gapW };
+    if (gapW >= minSlotWidthPx) slots.push({ x: cursor, width: gapW });
     cursor = Math.max(cursor, b.end);
   }
   const tail = frameWidth - cursor;
-  if (tail >= minSlotWidthPx) return { x: cursor, width: tail };
-  return { x: 0, width: frameWidth };
+  if (tail >= minSlotWidthPx) slots.push({ x: cursor, width: tail });
+  return slots;
+}
+
+function usableSlotForBand(
+  frameWidth: number,
+  lineTop: number,
+  lineBottom: number,
+  obstacles: BandObstacle[] | undefined,
+  minSlotWidthPx: number,
+  slotSelectionPolicy: ResolvedPolicies["slotSelectionPolicy"],
+): { x: number; width: number } {
+  const slots = usableSlotsForBand(frameWidth, lineTop, lineBottom, obstacles, minSlotWidthPx);
+  if (slots.length === 0) {
+    return { x: 0, width: frameWidth };
+  }
+  if (slotSelectionPolicy === "multi_slot_fill") {
+    return slots.reduce((best, slot) => (slot.width > best.width ? slot : best));
+  }
+  return slots[0]!;
 }
 
 function contentFrameRect(page: LayoutInput["page"], margins: LayoutInput["margins"]): Rect {
@@ -385,7 +421,7 @@ function fixWordBoundarySplits(
 function breakBlockIntoLineDrafts(
   block: BlockSnapshot,
   snapshot: MeasuredDocumentSnapshot,
-  contentWidth: number,
+  lineWidthForIndex: (lineIndex: number) => number,
 ): LineDraft[] {
   if (block.type === "image") return [];
   const lines: LineDraft[] = [];
@@ -395,6 +431,7 @@ function breakBlockIntoLineDrafts(
   let lineWidthUsed = 0;
   let linePmFrom = Number.POSITIVE_INFINITY;
   let linePmTo = 0;
+  let currentLineWidth = Math.max(1, lineWidthForIndex(0));
 
   const flushCurrentLine = () => {
     if (currentParts.length === 0) return;
@@ -407,6 +444,7 @@ function breakBlockIntoLineDrafts(
     lineWidthUsed = 0;
     linePmFrom = Number.POSITIVE_INFINITY;
     linePmTo = 0;
+    currentLineWidth = Math.max(1, lineWidthForIndex(lines.length));
   };
 
   const appendToLine = (pr: PlacedRun, pmFrom: number, pmTo: number) => {
@@ -427,7 +465,7 @@ function breakBlockIntoLineDrafts(
         const placed: PlacedRun[] = [];
         const width = pushPlacedSegment(run, measuredRuns, piece, 0, piece.length, 0, placed);
         const pr = placed[0]!;
-        if (lineWidthUsed > 0 && lineWidthUsed + width > contentWidth) flushCurrentLine();
+        if (lineWidthUsed > 0 && lineWidthUsed + width > currentLineWidth) flushCurrentLine();
         appendToLine(pr, pr.pmRange.from, pr.pmRange.to);
         continue;
       }
@@ -440,7 +478,7 @@ function breakBlockIntoLineDrafts(
           const mid = best + 1;
           const sub = piece.slice(offset, mid);
           const w = runWidthPx({ ...run, text: sub }, measuredRuns);
-          if (lineWidthUsed + w > contentWidth) break;
+          if (lineWidthUsed + w > currentLineWidth) break;
           best = mid;
         }
         const bestBeforeWhitespaceAdjust = best;
@@ -478,7 +516,7 @@ function breakBlockIntoLineDrafts(
         if (best === offset) {
           const sub = piece.slice(offset, offset + 1);
           const w = runWidthPx({ ...run, text: sub }, measuredRuns);
-          if (lineWidthUsed > 0 && lineWidthUsed + w > contentWidth) {
+          if (lineWidthUsed > 0 && lineWidthUsed + w > currentLineWidth) {
             flushCurrentLine();
           }
           const placed: PlacedRun[] = [];
@@ -653,7 +691,7 @@ export function composeLayout(
   const policies = resolvePolicies(input);
   const lineHeight = input.typography.defaultLineHeightPx;
   const frame = contentFrameRect(input.page, input.margins);
-  const obstacles = input.obstacles;
+  const baseObstacles = input.obstacles ?? [];
 
   const pages: PageLayout[] = [];
   const lineRefs: LineRef[] = [];
@@ -661,6 +699,7 @@ export function composeLayout(
   let currentFragments: BlockFragment[] = [];
   let currentY = 0;
   let pageIndex = 0;
+  let activeObstacles = [...baseObstacles];
 
   const flushPage = (reasonForLastFragment?: BreakReason) => {
     if (currentFragments.length === 0) return;
@@ -683,23 +722,38 @@ export function composeLayout(
     pageIndex += 1;
     currentFragments = [];
     currentY = 0;
+    activeObstacles = [...baseObstacles];
   };
 
   const blocks = snapshot.blocks;
 
-  const contentWidthForBlockStart = (yInFrame: number): number => {
+  const slotForLineAtY = (yInFrame: number) => {
     const bandTop = frame.y + yInFrame;
     const bandBottom = bandTop + lineHeight;
-    const slot = usableSlotForBand(frame.width, bandTop, bandBottom, obstacles, policies.minSlotWidthPx);
-    return slot.width;
+    return usableSlotForBand(
+      frame.width,
+      bandTop,
+      bandBottom,
+      activeObstacles,
+      policies.minSlotWidthPx,
+      policies.slotSelectionPolicy,
+    );
+  };
+
+  const contentWidthForLine = (yInFrame: number): number => {
+    return slotForLineAtY(yInFrame).width;
   };
 
   const estimateBlockHeight = (b: BlockSnapshot, yInFrame: number): number => {
     if (b.type === "image") {
+      if (readImagePlacement(b.attrs["placement"]) === "float") {
+        return 0;
+      }
       return fittedImageBlockSize(b, frame.width, frame.height).height;
     }
-    const w = contentWidthForBlockStart(yInFrame);
-    const d = breakBlockIntoLineDrafts(b, snapshot, w);
+    const d = breakBlockIntoLineDrafts(b, snapshot, (lineIndex) =>
+      contentWidthForLine(yInFrame + lineIndex * lineHeight),
+    );
     return d.length * lineHeight;
   };
 
@@ -712,8 +766,59 @@ export function composeLayout(
 
     if (block.type === "image") {
       const image = fittedImageBlockSize(block, frame.width, frame.height);
+      const placement = readImagePlacement(block.attrs["placement"]);
       if (currentY > 0 && currentY + image.height > frame.height) {
         flushPage("frame_overflow");
+      }
+
+      if (placement === "float") {
+        const maxX = Math.max(0, frame.width - image.width);
+        const offsetX = clampNumber(
+          readNonNegativeNumber(block.attrs["offsetXPx"], imageXOffset(image.align, frame.width, image.width)),
+          0,
+          maxX,
+        );
+        const maxYOffset = Math.max(0, frame.height - currentY - image.height);
+        const offsetY = clampNumber(readNonNegativeNumber(block.attrs["offsetYPx"], 0), 0, maxYOffset);
+        const y = currentY + offsetY;
+
+        const imageLine: LineBox = {
+          y,
+          height: image.height,
+          runs: [],
+          pmRange: { from: block.pmRange.from, to: block.pmRange.to },
+        };
+        const fragIdx = currentFragments.length;
+        currentFragments.push({
+          blockId: block.id,
+          fragmentIndex: 0,
+          kind: "image",
+          pmRange: { from: block.pmRange.from, to: block.pmRange.to },
+          lines: [imageLine],
+          bounds: {
+            x: offsetX,
+            y,
+            width: image.width,
+            height: image.height,
+          },
+        });
+        lineRefs.push({
+          pageIndex,
+          frameIndex: 0,
+          fragmentIndex: fragIdx,
+          lineIndex: 0,
+          pmFrom: block.pmRange.from,
+          pmTo: block.pmRange.to,
+        });
+        activeObstacles.push({
+          id: `${block.id}-page-${pageIndex}`,
+          yStart: frame.y + y,
+          yEnd: frame.y + y + image.height,
+          intervalsForBand() {
+            return [{ start: offsetX, end: offsetX + image.width }];
+          },
+        });
+        continue;
       }
 
       const imageLine: LineBox = {
@@ -764,7 +869,9 @@ export function composeLayout(
       }
     }
 
-    const drafts = breakBlockIntoLineDrafts(block, snapshot, contentWidthForBlockStart(currentY));
+    const drafts = breakBlockIntoLineDrafts(block, snapshot, (lineIndex) =>
+      contentWidthForLine(currentY + lineIndex * lineHeight),
+    );
     if (drafts.length === 0) continue;
 
     let lineCursor = 0;
@@ -800,9 +907,7 @@ export function composeLayout(
       const chunk = drafts.slice(lineCursor, lineCursor + useFit);
       const assigned: LineBox[] = chunk.map((d, li) => {
         const y = currentY + li * lineHeight;
-        const bt = frame.y + y;
-        const bb = bt + lineHeight;
-        const s = usableSlotForBand(frame.width, bt, bb, obstacles, policies.minSlotWidthPx);
+        const s = slotForLineAtY(y);
         return {
           y,
           height: lineHeight,

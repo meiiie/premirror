@@ -55,6 +55,7 @@ export type ResolvedMarkSet = {
 };
 
 export type ImageAlignment = "left" | "center" | "right";
+export type ImagePlacement = "block" | "float";
 
 export type ImageBlockAttrs = {
   src: string;
@@ -62,6 +63,9 @@ export type ImageBlockAttrs = {
   widthPx: number;
   heightPx: number;
   align?: ImageAlignment;
+  placement?: ImagePlacement;
+  offsetXPx?: number;
+  offsetYPx?: number;
 };
 
 export type StyledRun = {

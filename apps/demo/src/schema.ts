@@ -31,6 +31,9 @@ export const demoSchema = new Schema({
           widthPx: { default: 480 },
           heightPx: { default: 270 },
           align: { default: "center" },
+          placement: { default: "block" },
+          offsetXPx: { default: 0 },
+          offsetYPx: { default: 0 },
         },
         parseDOM: [
           {
@@ -43,6 +46,9 @@ export const demoSchema = new Schema({
                 widthPx: Number.parseFloat(dom.getAttribute("data-width-px") ?? dom.getAttribute("width") ?? "480"),
                 heightPx: Number.parseFloat(dom.getAttribute("data-height-px") ?? dom.getAttribute("height") ?? "270"),
                 align: dom.getAttribute("data-align") ?? "center",
+                placement: dom.getAttribute("data-placement") ?? "block",
+                offsetXPx: Number.parseFloat(dom.getAttribute("data-offset-x-px") ?? "0"),
+                offsetYPx: Number.parseFloat(dom.getAttribute("data-offset-y-px") ?? "0"),
               };
             },
           },
@@ -59,6 +65,9 @@ export const demoSchema = new Schema({
               "data-width-px": node.attrs.widthPx,
               "data-height-px": node.attrs.heightPx,
               "data-align": node.attrs.align,
+              "data-placement": node.attrs.placement,
+              "data-offset-x-px": node.attrs.offsetXPx,
+              "data-offset-y-px": node.attrs.offsetYPx,
             },
           ];
         },

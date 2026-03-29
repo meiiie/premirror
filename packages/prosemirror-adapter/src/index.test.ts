@@ -37,6 +37,9 @@ const schema = new Schema({
           widthPx: { default: 480 },
           heightPx: { default: 270 },
           align: { default: "center" },
+          placement: { default: "block" },
+          offsetXPx: { default: 0 },
+          offsetYPx: { default: 0 },
         },
         parseDOM: [],
         toDOM(node) {
@@ -48,6 +51,7 @@ const schema = new Schema({
               width: node.attrs.widthPx,
               height: node.attrs.heightPx,
               "data-premirror-image-block": "true",
+              "data-placement": node.attrs.placement,
             },
           ];
         },
@@ -105,6 +109,9 @@ describe("@premirror/prosemirror-adapter", () => {
           widthPx: 420,
           heightPx: 240,
           align: "center",
+          placement: "float",
+          offsetXPx: 24,
+          offsetYPx: 36,
         }),
       ]),
       plugins: runtime.plugins,
@@ -115,6 +122,9 @@ describe("@premirror/prosemirror-adapter", () => {
     expect(snapshot.blocks[0]?.type).toBe("image");
     expect(snapshot.blocks[0]?.attrs.widthPx).toBe(420);
     expect(snapshot.blocks[0]?.attrs.heightPx).toBe(240);
+    expect(snapshot.blocks[0]?.attrs.placement).toBe("float");
+    expect(snapshot.blocks[0]?.attrs.offsetXPx).toBe(24);
+    expect(snapshot.blocks[0]?.attrs.offsetYPx).toBe(36);
     expect(snapshot.blocks[0]?.runs).toEqual([]);
   });
 

@@ -140,4 +140,68 @@ describe("@premirror/composer", () => {
     expect(fragment?.bounds?.width).toBeGreaterThan(0);
     expect(fragment?.bounds?.height).toBeGreaterThan(0);
   });
+
+  it("routes paragraph lines around floating image obstacles", () => {
+    const text = Array.from({ length: 80 }, () => "wrapped text around image").join(" ");
+    const snapshot: MeasuredDocumentSnapshot = {
+      blocks: [
+        {
+          id: "img-1",
+          type: "image",
+          attrs: {
+            src: "https://example.com/lesson.svg",
+            alt: "Floating lesson image",
+            widthPx: 220,
+            heightPx: 160,
+            align: "left",
+            placement: "float",
+            offsetXPx: 0,
+            offsetYPx: 0,
+          },
+          pmRange: { from: 1, to: 2 },
+          runs: [],
+        },
+        {
+          id: "b1",
+          type: "paragraph",
+          attrs: {},
+          pmRange: { from: 3, to: text.length + 4 },
+          runs: [
+            {
+              id: "r1",
+              text,
+              font: "normal 400 16px Inter",
+              marks: {},
+              pmRange: { from: 3, to: text.length + 3 },
+            },
+          ],
+        },
+      ],
+      measuredRuns: {
+        r1: {
+          runId: "r1",
+          prepared: {},
+          widthPx: text.length * 8,
+          textLength: text.length,
+        },
+      },
+    };
+
+    const out = composeLayout(
+      snapshot,
+      null,
+      makeInput({ policies: { slotSelectionPolicy: "multi_slot_fill" } }),
+    );
+    const textFragment = out.pages[0]?.frames[0]?.fragments.find((fragment) => fragment.kind === "text");
+    expect(textFragment).toBeDefined();
+    if (!textFragment) return;
+
+    const linesBesideImage = textFragment.lines.filter((line) => line.y < 160);
+    const linesBelowImage = textFragment.lines.filter((line) => line.y >= 160);
+
+    expect(linesBesideImage.length).toBeGreaterThan(0);
+    expect(linesBelowImage.length).toBeGreaterThan(0);
+    expect(linesBesideImage.every((line) => (line.runs[0]?.x ?? 0) >= 220)).toBe(true);
+    expect(linesBelowImage.some((line) => (line.runs[0]?.x ?? 0) === 0)).toBe(true);
+  });
 });
