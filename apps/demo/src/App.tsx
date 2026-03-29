@@ -759,6 +759,41 @@ function getSelectedImageInfo(
   };
 }
 
+function findImageSelectionPos(
+  doc: ProseMirrorNode,
+  pos: number,
+): number | null {
+  const clamped = clampNumber(pos, 0, doc.content.size);
+  const resolved = doc.resolve(clamped);
+  if (resolved.nodeAfter?.type.name === "image") {
+    return clamped;
+  }
+  if (resolved.nodeBefore?.type.name === "image") {
+    return clamped - resolved.nodeBefore.nodeSize;
+  }
+  if (clamped > 0) {
+    const before = doc.resolve(clamped - 1);
+    if (before.nodeAfter?.type.name === "image") {
+      return clamped - 1;
+    }
+  }
+  if (clamped < doc.content.size) {
+    const after = doc.resolve(clamped + 1);
+    if (after.nodeAfter?.type.name === "image") {
+      return clamped + 1;
+    }
+  }
+  return null;
+}
+
+function setImageNodeSelection(
+  tr: Transaction,
+  pos: number,
+): Transaction {
+  const imagePos = findImageSelectionPos(tr.doc, pos);
+  return imagePos === null ? tr : tr.setSelection(NodeSelection.create(tr.doc, imagePos));
+}
+
 function buildImageMoveTransaction(
   state: EditorState,
   session: MoveSession,
@@ -837,11 +872,11 @@ function buildImageMoveTransaction(
           let nextTr = state.tr.delete(session.pos, session.pos + node.nodeSize);
           const mappedInsertPos = nextTr.mapping.map(insertPos, -1);
           nextTr = nextTr.insert(mappedInsertPos, node.type.create(nextAttrs));
-          return nextTr.setSelection(NodeSelection.create(nextTr.doc, mappedInsertPos));
+          return setImageNodeSelection(nextTr, mappedInsertPos);
         })();
 
   if (insertPos === session.pos) {
-    tr = tr.setSelection(NodeSelection.create(tr.doc, session.pos));
+    tr = setImageNodeSelection(tr, session.pos);
   }
   return options?.scrollIntoView === false ? tr : tr.scrollIntoView();
 }
