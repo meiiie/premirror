@@ -1419,13 +1419,21 @@ export function App() {
 
   const dragPreviewStyle = useMemo(() => {
     if (!moveSession) return null;
+    if (selectedImage) {
+      return {
+        left: selectedImage.rect.left,
+        top: selectedImage.rect.top,
+        width: selectedImage.rect.width,
+        height: selectedImage.rect.height,
+      };
+    }
     return {
       left: moveSession.previewLeft,
       top: moveSession.previewTop,
       width: moveSession.imageWidth,
       height: moveSession.imageHeight,
     };
-  }, [moveSession]);
+  }, [moveSession, selectedImage]);
 
   const onEditorPasteCapture = useCallback(
     (event: ReactClipboardEvent<HTMLDivElement>) => {
