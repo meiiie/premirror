@@ -30,7 +30,6 @@ import {
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
   type PointerEvent as ReactPointerEvent,
-  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -840,24 +839,13 @@ function buildImageMoveTransaction(
     )
     .sort((a, b) => a.top - b.top);
 
-  const precedingAnchor =
-    [...frameAnchors]
-      .reverse()
-      .find((anchor) => anchor.top + (anchor.bottom - anchor.top) / 2 <= centerY) ?? null;
-
   let insertPos = session.pos;
   let anchorTop = targetFrame.top;
 
-  if (precedingAnchor) {
-    const precedingNode = state.doc.nodeAt(precedingAnchor.pos);
-    insertPos = precedingAnchor.pos + (precedingNode?.nodeSize ?? 0);
-    anchorTop = precedingAnchor.bottom;
-  } else if (frameAnchors[0]) {
+  if (frameAnchors[0]) {
     insertPos = frameAnchors[0].pos;
-    anchorTop = targetFrame.top;
   } else {
     insertPos = Math.max(1, state.doc.content.size);
-    anchorTop = targetFrame.top;
   }
 
   const maxOffsetX = Math.max(0, targetFrame.width - session.imageWidth);
@@ -1076,25 +1064,23 @@ export function App() {
     const pending = pendingDragPointRef.current;
     pendingDragPointRef.current = null;
     if (!pending) return;
-    startTransition(() => {
-      setMoveSession((session) =>
-        !session
-          ? null
-          : (() => {
-              const nextSession = {
-                ...session,
-                clientX: pending.clientX,
-                clientY: pending.clientY,
-                previewLeft: pending.contentX - session.pointerOffsetX,
-                previewTop: pending.contentY - session.pointerOffsetY,
-                baseFrameBoxes: frameBoxesRef.current,
-                baseFragmentAnchors: fragmentAnchorsRef.current,
-              };
-              moveSessionRef.current = nextSession;
-              return nextSession;
-            })(),
-      );
-    });
+    setMoveSession((session) =>
+      !session
+        ? null
+        : (() => {
+            const nextSession = {
+              ...session,
+              clientX: pending.clientX,
+              clientY: pending.clientY,
+              previewLeft: pending.contentX - session.pointerOffsetX,
+              previewTop: pending.contentY - session.pointerOffsetY,
+              baseFrameBoxes: frameBoxesRef.current,
+              baseFragmentAnchors: fragmentAnchorsRef.current,
+            };
+            moveSessionRef.current = nextSession;
+            return nextSession;
+          })(),
+    );
   }, []);
 
   const scheduleDragUpdate = useCallback(
