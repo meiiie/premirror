@@ -26,7 +26,16 @@ import { EditorState, NodeSelection, TextSelection, type Transaction } from "pro
 import { baseKeymap, joinBackward, selectNodeBackward, toggleMark } from "prosemirror-commands";
 import { history, redo, undo } from "prosemirror-history";
 import { Decoration, DecorationSet } from "prosemirror-view";
-import { type ChangeEvent, type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { LuBold, LuItalic, LuCode, LuSeparatorHorizontal, LuGithub, LuImage } from "react-icons/lu";
 
@@ -152,6 +161,7 @@ function styleForRunPosition(
 const IMAGE_WIDTH_PRESETS = [320, 480, 640] as const;
 const MIN_IMAGE_WIDTH_PX = 180;
 const MIN_IMAGE_HEIGHT_PX = 120;
+const DEFAULT_IMAGE_SIZE: { width: number; height: number } = { width: 480, height: 270 };
 
 type DemoImageAttrs = {
   src: string;
@@ -198,8 +208,15 @@ type MoveSession = {
   pointerOffsetY: number;
   imageWidth: number;
   imageHeight: number;
+  imageSrc: string;
+  imageAlt: string;
   previewLeft: number;
   previewTop: number;
+};
+
+type ImportedImagePayload = {
+  src: string;
+  alt: string;
 };
 
 type ParagraphBox = {
@@ -279,7 +296,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-function measureImage(dataUrl: string): Promise<{ width: number; height: number }> {
+function measureImage(source: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => {
@@ -289,8 +306,80 @@ function measureImage(dataUrl: string): Promise<{ width: number; height: number 
       });
     };
     image.onerror = () => reject(new Error("Failed to decode image"));
-    image.src = dataUrl;
+    image.src = source;
   });
+}
+
+function fitImageDimensions(
+  width: number,
+  height: number,
+  maxWidth: number,
+): { widthPx: number; heightPx: number } {
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : DEFAULT_IMAGE_SIZE.width;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : DEFAULT_IMAGE_SIZE.height;
+  const aspectRatio = safeWidth / Math.max(1, safeHeight);
+  const widthPx = clampNumber(safeWidth, MIN_IMAGE_WIDTH_PX, maxWidth);
+  const heightPx = Math.max(
+    MIN_IMAGE_HEIGHT_PX,
+    Math.round(widthPx / Math.max(0.1, aspectRatio)),
+  );
+  return { widthPx, heightPx };
+}
+
+function parseHtmlImagePayload(html: string): ImportedImagePayload | null {
+  if (!html || typeof DOMParser === "undefined") return null;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const image = doc.querySelector("img[src]");
+  if (!image) return null;
+  const src = image.getAttribute("src")?.trim();
+  if (!src) return null;
+  return {
+    src,
+    alt: image.getAttribute("alt")?.trim() || "Pasted image",
+  };
+}
+
+function parseTextImagePayload(text: string): ImportedImagePayload | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  if (/^data:image\//i.test(trimmed)) {
+    return { src: trimmed, alt: "Pasted image" };
+  }
+  if (/^https?:\/\/\S+\.(?:png|jpe?g|gif|webp|svg)(?:[?#].*)?$/i.test(trimmed)) {
+    return { src: trimmed, alt: "Pasted image" };
+  }
+  return null;
+}
+
+function clipboardContainsImagePayload(clipboardData: DataTransfer | null): boolean {
+  if (!clipboardData) return false;
+  if (Array.from(clipboardData.items ?? []).some((item) => item.type.startsWith("image/"))) {
+    return true;
+  }
+  if (parseHtmlImagePayload(clipboardData.getData("text/html"))) {
+    return true;
+  }
+  return parseTextImagePayload(clipboardData.getData("text/plain")) !== null;
+}
+
+async function readClipboardImagePayload(
+  clipboardData: DataTransfer | null,
+): Promise<ImportedImagePayload | null> {
+  if (!clipboardData) return null;
+  const fileItem = Array.from(clipboardData.items ?? []).find((item) => item.type.startsWith("image/"));
+  if (fileItem) {
+    const file = fileItem.getAsFile();
+    if (file) {
+      return {
+        src: await readFileAsDataUrl(file),
+        alt: file.name || "Pasted image",
+      };
+    }
+  }
+  return (
+    parseHtmlImagePayload(clipboardData.getData("text/html")) ??
+    parseTextImagePayload(clipboardData.getData("text/plain"))
+  );
 }
 
 function clampPos(doc: ProseMirrorNode, pos: number): number {
@@ -480,6 +569,7 @@ function buildFragmentDecorations(
   layout: LayoutOutput,
   pageLayoutMode: PageLayoutMode,
   selectedImagePos: number | null,
+  draggingImagePos: number | null,
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const paragraphBoxes = new Map<string, ParagraphBox>();
@@ -591,13 +681,16 @@ function buildFragmentDecorations(
   }
 
   for (const image of imageBoxes) {
-    const imageClass =
-      selectedImagePos === image.from
-        ? "premirror-image-block ProseMirror-selectednode"
-        : "premirror-image-block";
+    const imageClasses = ["premirror-image-block"];
+    if (selectedImagePos === image.from) {
+      imageClasses.push("ProseMirror-selectednode");
+    }
+    if (draggingImagePos === image.from) {
+      imageClasses.push("is-drag-origin");
+    }
     decorations.push(
       Decoration.node(image.from, image.to, {
-        class: imageClass,
+        class: imageClasses.join(" "),
         style: [
           "position:absolute",
           `left:${image.left}px`,
@@ -689,7 +782,8 @@ export function App() {
   const [pageLayoutMode, setPageLayoutMode] = useState<PageLayoutMode>("spread");
   const [moveSession, setMoveSession] = useState<MoveSession | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const replaceFileInputRef = useRef<HTMLInputElement | null>(null);
+  const insertFileInputRef = useRef<HTMLInputElement | null>(null);
   const moveSessionRef = useRef<MoveSession | null>(null);
   const viewportWrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -714,18 +808,39 @@ export function App() {
       ? selection.from
       : null;
   }, [editorState.selection]);
+  const draggingImagePos = moveSession?.pos ?? null;
   const fragmentDecorations = useMemo(
-    () => buildFragmentDecorations(editorState.doc, layout, pageLayoutMode, selectedImagePos),
-    [editorState.doc, layout, pageLayoutMode, selectedImagePos],
+    () =>
+      buildFragmentDecorations(
+        editorState.doc,
+        layout,
+        pageLayoutMode,
+        selectedImagePos,
+        draggingImagePos,
+      ),
+    [draggingImagePos, editorState.doc, layout, pageLayoutMode, selectedImagePos],
   );
   const selectedImage = useMemo(
     () => getSelectedImageInfo(editorState, imageBoxes),
     [editorState, imageBoxes],
   );
+  const activeDropFrame = useMemo(() => {
+    if (!moveSession) return null;
+    const centerX = moveSession.previewLeft + moveSession.imageWidth / 2;
+    const centerY = moveSession.previewTop + moveSession.imageHeight / 2;
+    return findFrameForPoint(centerX, centerY, frameBoxes);
+  }, [frameBoxes, moveSession]);
 
   useEffect(() => {
     moveSessionRef.current = moveSession;
   }, [moveSession]);
+
+  useEffect(() => {
+    if (!moveSession && !resizeSession) return;
+    moveSessionRef.current = null;
+    setMoveSession(null);
+    setResizeSession(null);
+  }, [pageLayoutMode]);
 
   const dispatch = useCallback((tr: Transaction) => {
     setEditorState((s) => s.apply(tr));
@@ -998,28 +1113,52 @@ export function App() {
     run((s, d) => toggleMark(codeMark)(s, d));
   }, [run, codeMark]);
 
-  const insertImage = useCallback(() => {
-    run((state, dispatchTransaction) => {
-      const image = state.schema.nodes.image;
-      if (!image) return false;
-      const { $from } = state.selection;
-      const insertPos = $from.depth > 0 ? $from.after(1) : state.selection.to;
-      const node = image.create({
-        src: lessonImageUrl,
-        alt: "Lesson illustration",
-        widthPx: 480,
-        heightPx: 270,
+  const insertImageNode = useCallback(
+    (attrs: DemoImageAttrs) => {
+      applyTransaction((state) => {
+        const image = state.schema.nodes.image;
+        if (!image) return null;
+        const { $from } = state.selection;
+        const insertPos = $from.depth > 0 ? $from.after(1) : state.selection.to;
+        let tr = state.tr.insert(insertPos, image.create(attrs));
+        tr = tr.setSelection(NodeSelection.create(tr.doc, insertPos)).scrollIntoView();
+        return tr;
+      });
+    },
+    [applyTransaction],
+  );
+
+  const insertImageFromSource = useCallback(
+    async (src: string, alt: string, patch?: Partial<DemoImageAttrs>) => {
+      let measured = DEFAULT_IMAGE_SIZE;
+      try {
+        measured = await measureImage(src);
+      } catch {
+        measured = DEFAULT_IMAGE_SIZE;
+      }
+      const fitted = fitImageDimensions(measured.width, measured.height, contentFrameWidth);
+      insertImageNode({
+        src,
+        alt,
+        widthPx: fitted.widthPx,
+        heightPx: fitted.heightPx,
         align: "center",
         placement: "block",
         offsetXPx: 0,
         offsetYPx: 0,
+        ...patch,
       });
-      if (dispatchTransaction) {
-        dispatchTransaction(state.tr.insert(insertPos, node).scrollIntoView());
-      }
-      return true;
-    });
-  }, [run]);
+    },
+    [contentFrameWidth, insertImageNode],
+  );
+
+  const insertSampleImage = useCallback(() => {
+    void insertImageFromSource(lessonImageUrl, "Lesson illustration");
+  }, [insertImageFromSource]);
+
+  const triggerImportImage = useCallback(() => {
+    insertFileInputRef.current?.click();
+  }, []);
 
   const preventToolbarFocus = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     event.preventDefault();
@@ -1097,28 +1236,42 @@ export function App() {
   );
 
   const triggerReplaceImage = useCallback(() => {
-    fileInputRef.current?.click();
+    replaceFileInputRef.current?.click();
   }, []);
+
+  const onImportImage = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const dataUrl = await readFileAsDataUrl(file);
+      await insertImageFromSource(dataUrl, file.name || "Imported image");
+      event.target.value = "";
+    },
+    [insertImageFromSource],
+  );
 
   const onReplaceImage = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
       if (!file || !selectedImage) return;
       const dataUrl = await readFileAsDataUrl(file);
-      const measured = await measureImage(dataUrl);
-      const aspectRatio = measured.width / Math.max(1, measured.height);
-      const nextWidth = clampNumber(measured.width, MIN_IMAGE_WIDTH_PX, contentFrameWidth);
-      const nextHeight = Math.max(MIN_IMAGE_HEIGHT_PX, Math.round(nextWidth / Math.max(0.1, aspectRatio)));
-      const maxOffsetX = Math.max(0, selectedImage.frame.width - nextWidth);
+      let measured = DEFAULT_IMAGE_SIZE;
+      try {
+        measured = await measureImage(dataUrl);
+      } catch {
+        measured = DEFAULT_IMAGE_SIZE;
+      }
+      const fitted = fitImageDimensions(measured.width, measured.height, contentFrameWidth);
+      const maxOffsetX = Math.max(0, selectedImage.frame.width - fitted.widthPx);
       const maxOffsetY = Math.max(
         0,
-        selectedImage.frame.top + selectedImage.frame.height - nextHeight - selectedImage.anchorTop,
+        selectedImage.frame.top + selectedImage.frame.height - fitted.heightPx - selectedImage.anchorTop,
       );
       updateImageAttrsAtPos(selectedImage.pos, {
         src: dataUrl,
         alt: file.name,
-        widthPx: nextWidth,
-        heightPx: nextHeight,
+        widthPx: fitted.widthPx,
+        heightPx: fitted.heightPx,
         offsetXPx: Math.round(clampNumber(selectedImage.attrs.offsetXPx, 0, maxOffsetX)),
         offsetYPx: Math.round(clampNumber(selectedImage.attrs.offsetYPx, 0, maxOffsetY)),
       });
@@ -1132,6 +1285,9 @@ export function App() {
       event.preventDefault();
       event.stopPropagation();
       if (!selectedImage) return;
+      if (event.currentTarget.setPointerCapture) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }
       const startPoint = pointerToViewportContentPoint(
         event.clientX,
         event.clientY,
@@ -1145,6 +1301,8 @@ export function App() {
         pointerOffsetY: startPoint.y - selectedImage.rect.top,
         imageWidth: selectedImage.rect.width,
         imageHeight: selectedImage.rect.height,
+        imageSrc: selectedImage.attrs.src,
+        imageAlt: selectedImage.attrs.alt,
         previewLeft: selectedImage.rect.left,
         previewTop: selectedImage.rect.top,
       };
@@ -1152,6 +1310,21 @@ export function App() {
       setMoveSession(nextSession);
     },
     [selectedImage],
+  );
+
+  const onEditorPasteCapture = useCallback(
+    (event: ReactClipboardEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || !target.closest(".ProseMirror")) return;
+      if (!clipboardContainsImagePayload(event.clipboardData)) return;
+      event.preventDefault();
+      void (async () => {
+        const payload = await readClipboardImagePayload(event.clipboardData);
+        if (!payload) return;
+        await insertImageFromSource(payload.src, payload.alt);
+      })();
+    },
+    [insertImageFromSource],
   );
 
   const startImageResize = useCallback(
@@ -1187,8 +1360,11 @@ export function App() {
           <Toolbar.Button className="word-toolbar-icon-btn" type="button" onClick={toggleCode} aria-label="Code">
             <LuCode />
           </Toolbar.Button>
-          <Toolbar.Button className="word-toolbar-icon-btn" type="button" onClick={insertImage} aria-label="Insert image">
+          <Toolbar.Button className="word-toolbar-icon-btn" type="button" onClick={triggerImportImage} aria-label="Import image">
             <LuImage />
+          </Toolbar.Button>
+          <Toolbar.Button className="word-toolbar-link-btn" type="button" onClick={insertSampleImage}>
+            Sample image
           </Toolbar.Button>
           <Toolbar.Separator className="word-toolbar-sep" />
           <Toolbar.Button className="word-toolbar-icon-btn" type="button" onClick={pageBreak} aria-label="Page break">
@@ -1238,7 +1414,11 @@ export function App() {
         </div>
       </div>
 
-      <div ref={viewportWrapRef} className="paged-viewport-wrap">
+      <div
+        ref={viewportWrapRef}
+        className="paged-viewport-wrap"
+        onPasteCapture={onEditorPasteCapture}
+      >
         <div className="paged-viewport-inner">
           <div className="premirror-stack">
             <PremirrorPageViewport
@@ -1257,6 +1437,18 @@ export function App() {
             />
             {selectedImage ? (
               <>
+                {activeDropFrame && moveSession ? (
+                  <div
+                    aria-hidden
+                    className="image-drop-frame"
+                    style={{
+                      left: activeDropFrame.left,
+                      top: activeDropFrame.top,
+                      width: activeDropFrame.width,
+                      height: activeDropFrame.height,
+                    }}
+                  />
+                ) : null}
                 <div
                   aria-label="Move image"
                   className={`image-drag-surface ${moveSession ? "is-dragging" : ""}`}
@@ -1278,15 +1470,22 @@ export function App() {
                       width: moveSession.imageWidth,
                       height: moveSession.imageHeight,
                     }}
-                  />
+                  >
+                    <img
+                      src={moveSession.imageSrc}
+                      alt={moveSession.imageAlt}
+                      draggable={false}
+                    />
+                  </div>
                 ) : null}
-                <div
-                  className="image-toolbar"
-                  style={{
-                    left: selectedImage.rect.left,
-                    top: Math.max(0, selectedImage.rect.top - 48),
-                  }}
-                >
+                {!moveSession ? (
+                  <div
+                    className="image-toolbar"
+                    style={{
+                      left: selectedImage.rect.left,
+                      top: Math.max(0, selectedImage.rect.top - 48),
+                    }}
+                  >
                   <div className="image-toolbar-group">
                     <button
                       type="button"
@@ -1358,6 +1557,7 @@ export function App() {
                     </span>
                   </div>
                 </div>
+                ) : null}
                 {!moveSession ? (
                   <button
                     type="button"
@@ -1371,14 +1571,23 @@ export function App() {
                   />
                 ) : null}
                 <input
-                  ref={fileInputRef}
+                  ref={replaceFileInputRef}
                   className="image-file-input"
                   type="file"
                   accept="image/*"
+                  data-input-role="replace-image"
                   onChange={onReplaceImage}
                 />
               </>
             ) : null}
+            <input
+              ref={insertFileInputRef}
+              className="image-file-input"
+              type="file"
+              accept="image/*"
+              data-input-role="import-image"
+              onChange={onImportImage}
+            />
             {showDebug ? (
               <div className="selection-overlay" aria-hidden>
                 {projection.rects.map((r, i) => (

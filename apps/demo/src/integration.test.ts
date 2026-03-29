@@ -137,4 +137,63 @@ describe("demo integration", () => {
     );
     expect(sameBandXs.size).toBeGreaterThan(1);
   });
+
+  it("supports multiple floating images in the same band", async () => {
+    const options = defaultPremirrorOptions({
+      policies: {
+        slotSelectionPolicy: "multi_slot_fill",
+      },
+    });
+    const runtime = createPremirror(options);
+    const compose = await import("@premirror/composer");
+
+    const state = EditorState.create({
+      schema: demoSchema,
+      doc: demoSchema.node("doc", null, [
+        demoSchema.node("image", {
+          src: "https://example.com/lesson-left.svg",
+          alt: "Left float",
+          widthPx: 180,
+          heightPx: 160,
+          align: "left",
+          placement: "float",
+          offsetXPx: 0,
+          offsetYPx: 0,
+        }),
+        demoSchema.node("image", {
+          src: "https://example.com/lesson-right.svg",
+          alt: "Right float",
+          widthPx: 180,
+          heightPx: 160,
+          align: "right",
+          placement: "float",
+          offsetXPx: 444,
+          offsetYPx: 0,
+        }),
+        demoSchema.node("paragraph", null, [
+          demoSchema.text(
+            Array.from({ length: 140 }, () => "Multiple floating images keep text in the open lane").join(" "),
+          ),
+        ]),
+      ]),
+      plugins: runtime.plugins,
+    });
+
+    const snapshot = runtime.toSnapshot(state);
+    const measured = runtime.measureSnapshot(snapshot);
+    const layout = compose.composeLayout(
+      measured,
+      null,
+      createLayoutInputFromOptions(options),
+    );
+
+    const imageFragments = layout.pages[0]?.frames[0]?.fragments.filter((fragment) => fragment.kind === "image") ?? [];
+    expect(imageFragments.length).toBe(2);
+    const textFragment = layout.pages[0]?.frames[0]?.fragments.find((fragment) => fragment.kind === "text");
+    expect(textFragment).toBeDefined();
+    if (!textFragment) return;
+    const sameBandXs = textFragment.lines.filter((line) => line.y < 160).map((line) => line.runs[0]?.x ?? 0);
+    expect(sameBandXs.length).toBeGreaterThan(0);
+    expect(sameBandXs.every((x) => x >= 180 && x < 444)).toBe(true);
+  });
 });

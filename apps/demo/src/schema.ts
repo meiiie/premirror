@@ -52,6 +52,22 @@ export const demoSchema = new Schema({
               };
             },
           },
+          {
+            tag: "img[src]",
+            getAttrs(dom: string | HTMLElement) {
+              if (!(dom instanceof HTMLElement)) return false;
+              return {
+                src: dom.getAttribute("src") ?? "",
+                alt: dom.getAttribute("alt") ?? "",
+                widthPx: Number.parseFloat(dom.getAttribute("width") ?? "480"),
+                heightPx: Number.parseFloat(dom.getAttribute("height") ?? "270"),
+                align: dom.getAttribute("data-align") ?? "center",
+                placement: dom.getAttribute("data-placement") ?? "block",
+                offsetXPx: Number.parseFloat(dom.getAttribute("data-offset-x-px") ?? "0"),
+                offsetYPx: Number.parseFloat(dom.getAttribute("data-offset-y-px") ?? "0"),
+              };
+            },
+          },
         ],
         toDOM(node) {
           return [

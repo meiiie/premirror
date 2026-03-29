@@ -264,4 +264,86 @@ describe("@premirror/composer", () => {
     const xs = new Set(sameBandLines.map((line) => line.runs[0]?.x ?? 0));
     expect(xs.size).toBeGreaterThan(1);
   });
+
+  it("keeps a center lane open between multiple floating images", () => {
+    const text = Array.from({ length: 140 }, () => "multiple floated images keep a usable center lane").join(" ");
+    const snapshot: MeasuredDocumentSnapshot = {
+      blocks: [
+        {
+          id: "img-left",
+          type: "image",
+          attrs: {
+            src: "https://example.com/lesson-left.svg",
+            alt: "Left floating lesson image",
+            widthPx: 180,
+            heightPx: 160,
+            align: "left",
+            placement: "float",
+            offsetXPx: 0,
+            offsetYPx: 0,
+          },
+          pmRange: { from: 1, to: 2 },
+          runs: [],
+        },
+        {
+          id: "img-right",
+          type: "image",
+          attrs: {
+            src: "https://example.com/lesson-right.svg",
+            alt: "Right floating lesson image",
+            widthPx: 180,
+            heightPx: 160,
+            align: "right",
+            placement: "float",
+            offsetXPx: 444,
+            offsetYPx: 0,
+          },
+          pmRange: { from: 3, to: 4 },
+          runs: [],
+        },
+        {
+          id: "b1",
+          type: "paragraph",
+          attrs: {},
+          pmRange: { from: 5, to: text.length + 6 },
+          runs: [
+            {
+              id: "r1",
+              text,
+              font: "normal 400 16px Inter",
+              marks: {},
+              pmRange: { from: 5, to: text.length + 5 },
+            },
+          ],
+        },
+      ],
+      measuredRuns: {
+        r1: {
+          runId: "r1",
+          prepared: {},
+          widthPx: text.length * 8,
+          textLength: text.length,
+        },
+      },
+    };
+
+    const out = composeLayout(
+      snapshot,
+      null,
+      makeInput({ policies: { slotSelectionPolicy: "multi_slot_fill" } }),
+    );
+    const textFragment = out.pages[0]?.frames[0]?.fragments.find((fragment) => fragment.kind === "text");
+    expect(textFragment).toBeDefined();
+    if (!textFragment) return;
+
+    const sameBandLines = textFragment.lines.filter((line) => line.y < 160);
+    expect(sameBandLines.length).toBeGreaterThan(0);
+    expect(
+      sameBandLines.every((line) => {
+        const x = line.runs[0]?.x ?? 0;
+        return x >= 180 && x < 444;
+      }),
+    ).toBe(true);
+    expect(textFragment.lines.some((line) => line.y >= 160 && (line.runs[0]?.x ?? 0) === 0)).toBe(true);
+  });
 });
