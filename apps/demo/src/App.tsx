@@ -208,8 +208,6 @@ type MoveSession = {
   pointerOffsetY: number;
   imageWidth: number;
   imageHeight: number;
-  imageSrc: string;
-  imageAlt: string;
   previewLeft: number;
   previewTop: number;
 };
@@ -569,7 +567,7 @@ function buildFragmentDecorations(
   layout: LayoutOutput,
   pageLayoutMode: PageLayoutMode,
   selectedImagePos: number | null,
-  draggingImagePos: number | null,
+  moveSession: MoveSession | null,
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const paragraphBoxes = new Map<string, ParagraphBox>();
@@ -685,18 +683,23 @@ function buildFragmentDecorations(
     if (selectedImagePos === image.from) {
       imageClasses.push("ProseMirror-selectednode");
     }
-    if (draggingImagePos === image.from) {
-      imageClasses.push("is-drag-origin");
+    const isLiveDragging = moveSession?.pos === image.from;
+    if (isLiveDragging) {
+      imageClasses.push("is-live-dragging");
     }
+    const liveLeft = isLiveDragging ? moveSession.previewLeft : image.left;
+    const liveTop = isLiveDragging ? moveSession.previewTop : image.top;
+    const liveWidth = isLiveDragging ? moveSession.imageWidth : image.width;
+    const liveHeight = isLiveDragging ? moveSession.imageHeight : image.height;
     decorations.push(
       Decoration.node(image.from, image.to, {
         class: imageClasses.join(" "),
         style: [
           "position:absolute",
-          `left:${image.left}px`,
-          `top:${image.top}px`,
-          `width:${Math.max(1, image.width)}px`,
-          `height:${Math.max(1, image.height)}px`,
+          `left:${liveLeft}px`,
+          `top:${liveTop}px`,
+          `width:${Math.max(1, liveWidth)}px`,
+          `height:${Math.max(1, liveHeight)}px`,
           "margin:0",
         ].join(";"),
       }),
@@ -808,7 +811,6 @@ export function App() {
       ? selection.from
       : null;
   }, [editorState.selection]);
-  const draggingImagePos = moveSession?.pos ?? null;
   const fragmentDecorations = useMemo(
     () =>
       buildFragmentDecorations(
@@ -816,9 +818,9 @@ export function App() {
         layout,
         pageLayoutMode,
         selectedImagePos,
-        draggingImagePos,
+        moveSession,
       ),
-    [draggingImagePos, editorState.doc, layout, pageLayoutMode, selectedImagePos],
+    [editorState.doc, layout, moveSession, pageLayoutMode, selectedImagePos],
   );
   const selectedImage = useMemo(
     () => getSelectedImageInfo(editorState, imageBoxes),
@@ -830,6 +832,27 @@ export function App() {
     const centerY = moveSession.previewTop + moveSession.imageHeight / 2;
     return findFrameForPoint(centerX, centerY, frameBoxes);
   }, [frameBoxes, moveSession]);
+  const showDropFrame = useMemo(() => {
+    if (!selectedImage || !activeDropFrame || !moveSession) return null;
+    const sameFrame =
+      activeDropFrame.left === selectedImage.frame.left &&
+      activeDropFrame.top === selectedImage.frame.top &&
+      activeDropFrame.width === selectedImage.frame.width &&
+      activeDropFrame.height === selectedImage.frame.height;
+    return sameFrame ? null : activeDropFrame;
+  }, [activeDropFrame, moveSession, selectedImage]);
+  const liveSelectedRect = useMemo(() => {
+    if (!selectedImage) return null;
+    if (!moveSession || moveSession.pos !== selectedImage.pos) {
+      return selectedImage.rect;
+    }
+    return {
+      left: moveSession.previewLeft,
+      top: moveSession.previewTop,
+      width: moveSession.imageWidth,
+      height: moveSession.imageHeight,
+    };
+  }, [moveSession, selectedImage]);
 
   useEffect(() => {
     moveSessionRef.current = moveSession;
@@ -1301,8 +1324,6 @@ export function App() {
         pointerOffsetY: startPoint.y - selectedImage.rect.top,
         imageWidth: selectedImage.rect.width,
         imageHeight: selectedImage.rect.height,
-        imageSrc: selectedImage.attrs.src,
-        imageAlt: selectedImage.attrs.alt,
         previewLeft: selectedImage.rect.left,
         previewTop: selectedImage.rect.top,
       };
@@ -1437,15 +1458,15 @@ export function App() {
             />
             {selectedImage ? (
               <>
-                {activeDropFrame && moveSession ? (
+                {showDropFrame ? (
                   <div
                     aria-hidden
                     className="image-drop-frame"
                     style={{
-                      left: activeDropFrame.left,
-                      top: activeDropFrame.top,
-                      width: activeDropFrame.width,
-                      height: activeDropFrame.height,
+                      left: showDropFrame.left,
+                      top: showDropFrame.top,
+                      width: showDropFrame.width,
+                      height: showDropFrame.height,
                     }}
                   />
                 ) : null}
@@ -1453,31 +1474,13 @@ export function App() {
                   aria-label="Move image"
                   className={`image-drag-surface ${moveSession ? "is-dragging" : ""}`}
                   style={{
-                    left: selectedImage.rect.left,
-                    top: selectedImage.rect.top,
-                    width: selectedImage.rect.width,
-                    height: selectedImage.rect.height,
+                    left: liveSelectedRect?.left ?? selectedImage.rect.left,
+                    top: liveSelectedRect?.top ?? selectedImage.rect.top,
+                    width: liveSelectedRect?.width ?? selectedImage.rect.width,
+                    height: liveSelectedRect?.height ?? selectedImage.rect.height,
                   }}
                   onPointerDown={startImageMove}
                 />
-                {moveSession ? (
-                  <div
-                    aria-hidden
-                    className="image-drag-preview"
-                    style={{
-                      left: moveSession.previewLeft,
-                      top: moveSession.previewTop,
-                      width: moveSession.imageWidth,
-                      height: moveSession.imageHeight,
-                    }}
-                  >
-                    <img
-                      src={moveSession.imageSrc}
-                      alt={moveSession.imageAlt}
-                      draggable={false}
-                    />
-                  </div>
-                ) : null}
                 {!moveSession ? (
                   <div
                     className="image-toolbar"
